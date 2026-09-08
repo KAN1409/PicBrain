@@ -45,6 +45,6 @@ class HybridOcrEngine(context: Context) : OcrEngine {
     }
 
     companion object {
-        const val ID = "hybrid-mlkit16.0.1-tesseract5.5.1-ara-fast-v1"
+        const val ID = "hybrid-mlkit16.0.1-tesseract5.5.1-ara-best-v2"
     }
 }
