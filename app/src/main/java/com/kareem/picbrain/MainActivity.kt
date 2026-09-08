@@ -112,7 +112,8 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
                 vm.setSearchQuery(it)
                 filter = if (it.isBlank()) LibraryFilter.SCREENSHOTS else LibraryFilter.SEARCH
             },
-            label = { Text("Search screenshot text") },
+            label = { Text("Search screenshots in Arabic or English") },
+            supportingText = { Text("Words can be in any order. Arabic spelling variants and Arabic digits are normalized locally.") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
@@ -161,13 +162,16 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
 
         Text(vm.status, style = MaterialTheme.typography.bodySmall)
         Text(
-            "OCR runs automatically in the background and resumes after interruptions. The current local engine is a retrieval foundation; Arabic and mixed-language accuracy remain a separate quality gate.",
+            "Retrieval is fully local. Search now normalizes Arabic/English text and matches multiple words even when their order differs. OCR recognition quality itself is still limited by the current local engine.",
             style = MaterialTheme.typography.bodySmall
         )
 
         Spacer(Modifier.height(2.dp))
         Text(
-            if (filter == LibraryFilter.SEARCH) "Search results" else "Index review",
+            when (filter) {
+                LibraryFilter.SEARCH -> "Search results (${searchResults.size})"
+                else -> "Index review"
+            },
             style = MaterialTheme.typography.titleMedium
         )
 
