@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -55,6 +56,8 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
     val mediaCount by vm.mediaCount.collectAsStateWithLifecycle()
     val screenshotCount by vm.screenshotCount.collectAsStateWithLifecycle()
     val ocrDoneCount by vm.ocrDoneCount.collectAsStateWithLifecycle()
+    val ocrPendingCount by vm.ocrPendingCount.collectAsStateWithLifecycle()
+    val ocrFailedCount by vm.ocrFailedCount.collectAsStateWithLifecycle()
     val recentMedia by vm.recentMedia.collectAsStateWithLifecycle()
     val recentScreenshots by vm.recentScreenshots.collectAsStateWithLifecycle()
     val searchResults by vm.searchResults.collectAsStateWithLifecycle()
@@ -139,14 +142,26 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
             Button(onClick = vm::rebuildIndex, enabled = !vm.isSyncing) {
                 Text(if (vm.isSyncing) "Syncing…" else "Sync")
             }
-            Button(onClick = vm::runOcrBatch, enabled = !vm.isOcrRunning) {
-                Text(if (vm.isOcrRunning) "Reading…" else "Read next 25")
+            Button(onClick = vm::scheduleBackgroundOcr) {
+                Text("Continue OCR")
             }
+        }
+
+        val totalOcr = ocrDoneCount + ocrPendingCount + ocrFailedCount
+        if (totalOcr > 0) {
+            LinearProgressIndicator(
+                progress = { ocrDoneCount.toFloat() / totalOcr.toFloat() },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                "OCR: $ocrDoneCount / $totalOcr ready • $ocrPendingCount pending • $ocrFailedCount failed",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
 
         Text(vm.status, style = MaterialTheme.typography.bodySmall)
         Text(
-            "OCR is local. This first engine is a retrieval foundation; Arabic accuracy is a separate quality gate.",
+            "OCR runs automatically in the background and resumes after interruptions. The current local engine is a retrieval foundation; Arabic and mixed-language accuracy remain a separate quality gate.",
             style = MaterialTheme.typography.bodySmall
         )
 
