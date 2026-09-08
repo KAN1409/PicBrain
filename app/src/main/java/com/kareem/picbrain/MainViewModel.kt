@@ -8,10 +8,12 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.kareem.picbrain.data.media.MediaIndexer
 import com.kareem.picbrain.data.media.MediaStoreObserver
-import com.kareem.picbrain.data.ocr.MlKitOcrEngine
-import com.kareem.picbrain.data.ocr.ScreenshotOcrProcessor
+import com.kareem.picbrain.data.ocr.OcrWorker
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -26,8 +28,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val db = (app as PicBrainApp).database
     private val dao = db.mediaItemDao()
     private val indexer = MediaIndexer(app, dao)
-    private val ocrProcessor = ScreenshotOcrProcessor(dao, MlKitOcrEngine(app))
     private val observer = MediaStoreObserver(app.contentResolver, ::onMediaStoreChanged)
+    private val workManager = WorkManager.getInstance(app)
     private var changeJob: Job? = null
     private var monitoring = false
     private val searchQuery = MutableStateFlow("")
@@ -35,6 +37,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val mediaCount = dao.observeCount().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val screenshotCount = dao.observeScreenshotCount().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val ocrDoneCount = dao.observeOcrDoneCount().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+    val ocrPendingCount = dao.observeOcrPendingCount().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+    val ocrFailedCount = dao.observeOcrFailedCount().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val recentMedia = dao.observeRecent().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val recentScreenshots = dao.observeRecentScreenshots().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val searchResults = searchQuery
@@ -45,8 +49,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var isSyncing by mutableStateOf(false)
         private set
-    var isOcrRunning by mutableStateOf(false)
-        private set
 
     fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(getApplication(), permission) == PackageManager.PERMISSION_GRANTED
@@ -54,7 +56,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setSearchQuery(value: String) { searchQuery.value = value }
 
     fun startMediaMonitoring() {
-        if (monitoring) return
+        if (monitoring) {
+            scheduleBackgroundOcr()
+            return
+        }
         monitoring = true
         observer.start()
         reconcile("Checking library…")
@@ -68,25 +73,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun rebuildIndex() = reconcile("Rebuilding index…")
 
-    fun runOcrBatch() {
-        if (isOcrRunning) return
-        viewModelScope.launch {
-            isOcrRunning = true
-            status = "Reading screenshot text…"
-            runCatching { ocrProcessor.processPending(25) }
-                .onSuccess {
-                    status = if (it.attempted == 0) "No screenshots waiting for OCR"
-                    else "OCR: ${it.success} read, ${it.failed} failed"
-                }
-                .onFailure { status = "OCR failed: ${it.message ?: "unknown error"}" }
-            isOcrRunning = false
-        }
+    fun scheduleBackgroundOcr() {
+        if (!OcrWorker.hasImageReadPermission(getApplication())) return
+        val request = OneTimeWorkRequestBuilder<OcrWorker>().build()
+        workManager.enqueueUniqueWork(
+            OcrWorker.UNIQUE_WORK_NAME,
+            ExistingWorkPolicy.KEEP,
+            request
+        )
     }
 
     fun resetOcr() {
         viewModelScope.launch {
             dao.resetScreenshotOcr()
             status = "Screenshot OCR reset"
+            scheduleBackgroundOcr()
         }
     }
 
@@ -107,6 +108,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { indexer.reconcile() }
                 .onSuccess {
                     status = if (!silentSuccess) "Indexed ${it.indexed} images" else "Library is up to date"
+                    scheduleBackgroundOcr()
                 }
                 .onFailure { status = "Index failed: ${it.message ?: "unknown error"}" }
             isSyncing = false
