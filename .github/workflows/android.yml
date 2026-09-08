@@ -45,14 +45,14 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Fetch pinned Arabic OCR model
+      - name: Fetch pinned Arabic OCR best model
         shell: bash
         run: |
           MODEL_DIR="app/src/main/assets/tessdata"
           MODEL_FILE="$MODEL_DIR/ara.traineddata"
           mkdir -p "$MODEL_DIR"
           curl --fail --location --retry 3 \
-            "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/ara.traineddata" \
+            "https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/ara.traineddata" \
             --output "$MODEL_FILE"
           test -s "$MODEL_FILE"
           test "$(stat -c%s "$MODEL_FILE")" -gt 1000000
@@ -71,7 +71,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: PicBrain-v0.0.6-stable-signed
+          name: PicBrain-v0.0.7-stable-signed
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 90
