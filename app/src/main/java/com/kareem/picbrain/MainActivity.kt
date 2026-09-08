@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -65,11 +64,15 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
 
     val permissions = remember {
         when {
-            Build.VERSION.SDK_INT >= 34 -> arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+            Build.VERSION.SDK_INT >= 34 -> arrayOf(
+                Manifest.permission.READ_MEDIA_IMAGES,
+                Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
+            )
             Build.VERSION.SDK_INT >= 33 -> arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
             else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
     }
+
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         permissionGranted = hasImageReadPermission(vm)
         if (permissionGranted) vm.startMediaMonitoring()
@@ -80,9 +83,13 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
         onDispose { }
     }
 
-    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         Text("PicBrain", style = MaterialTheme.typography.headlineLarge)
         Text("Your Visual Memory", style = MaterialTheme.typography.titleMedium)
+
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
             CountBlock("Pictures", mediaCount)
             CountBlock("Screenshots", screenshotCount)
@@ -108,19 +115,47 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
         )
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(filter == LibraryFilter.ALL, { filter = LibraryFilter.ALL; query = ""; vm.setSearchQuery("") }, { Text("All") })
-            FilterChip(filter == LibraryFilter.SCREENSHOTS, { filter = LibraryFilter.SCREENSHOTS; query = ""; vm.setSearchQuery("") }, { Text("Screenshots") })
+            FilterChip(
+                selected = filter == LibraryFilter.ALL,
+                onClick = {
+                    filter = LibraryFilter.ALL
+                    query = ""
+                    vm.setSearchQuery("")
+                },
+                label = { Text("All") }
+            )
+            FilterChip(
+                selected = filter == LibraryFilter.SCREENSHOTS,
+                onClick = {
+                    filter = LibraryFilter.SCREENSHOTS
+                    query = ""
+                    vm.setSearchQuery("")
+                },
+                label = { Text("Screenshots") }
+            )
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = vm::rebuildIndex, enabled = !vm.isSyncing) { Text(if (vm.isSyncing) "Syncing…" else "Sync") }
-            Button(onClick = vm::runOcrBatch, enabled = !vm.isOcrRunning) { Text(if (vm.isOcrRunning) "Reading…" else "Read next 25") }
+            Button(onClick = vm::rebuildIndex, enabled = !vm.isSyncing) {
+                Text(if (vm.isSyncing) "Syncing…" else "Sync")
+            }
+            Button(onClick = vm::runOcrBatch, enabled = !vm.isOcrRunning) {
+                Text(if (vm.isOcrRunning) "Reading…" else "Read next 25")
+            }
         }
+
         Text(vm.status, style = MaterialTheme.typography.bodySmall)
-        Text("OCR is local. This first engine is a retrieval foundation; Arabic accuracy is a separate quality gate.", style = MaterialTheme.typography.bodySmall)
+        Text(
+            "OCR is local. This first engine is a retrieval foundation; Arabic accuracy is a separate quality gate.",
+            style = MaterialTheme.typography.bodySmall
+        )
 
         Spacer(Modifier.height(2.dp))
-        Text(if (filter == LibraryFilter.SEARCH) "Search results" else "Index review", style = MaterialTheme.typography.titleMedium)
+        Text(
+            if (filter == LibraryFilter.SEARCH) "Search results" else "Index review",
+            style = MaterialTheme.typography.titleMedium
+        )
+
         val items = when (filter) {
             LibraryFilter.ALL -> recentMedia
             LibraryFilter.SCREENSHOTS -> recentScreenshots
@@ -132,12 +167,19 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
 
 @Composable
 private fun CountBlock(label: String, value: Int) {
-    Column { Text(label, style = MaterialTheme.typography.labelLarge); Text(value.toString(), style = MaterialTheme.typography.headlineSmall) }
+    Column {
+        Text(label, style = MaterialTheme.typography.labelLarge)
+        Text(value.toString(), style = MaterialTheme.typography.headlineSmall)
+    }
 }
 
 @Composable
 private fun MediaGrid(items: List<MediaItemEntity>, modifier: Modifier = Modifier) {
-    if (items.isEmpty()) { Text("No matching indexed images."); return }
+    if (items.isEmpty()) {
+        Text("No matching indexed images.")
+        return
+    }
+
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 142.dp),
         modifier = modifier.fillMaxWidth(),
@@ -170,7 +212,9 @@ private fun MediaGrid(items: List<MediaItemEntity>, modifier: Modifier = Modifie
 }
 
 private fun hasImageReadPermission(vm: MainViewModel): Boolean = when {
-    Build.VERSION.SDK_INT >= 34 -> vm.hasPermission(Manifest.permission.READ_MEDIA_IMAGES) || vm.hasPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+    Build.VERSION.SDK_INT >= 34 ->
+        vm.hasPermission(Manifest.permission.READ_MEDIA_IMAGES) ||
+            vm.hasPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
     Build.VERSION.SDK_INT >= 33 -> vm.hasPermission(Manifest.permission.READ_MEDIA_IMAGES)
     else -> vm.hasPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
 }
