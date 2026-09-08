@@ -27,6 +27,32 @@ android {
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
+
+    val keystorePath = System.getenv("PICBRAIN_KEYSTORE_PATH")
+    val signingPassword = System.getenv("PICBRAIN_SIGNING_PASSWORD")
+
+    if (!keystorePath.isNullOrBlank() && !signingPassword.isNullOrBlank()) {
+        signingConfigs {
+            create("picbrain") {
+                storeFile = file(keystorePath)
+                storePassword = signingPassword
+                keyAlias = "picbrain"
+                keyPassword = signingPassword
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
+
+        buildTypes {
+            getByName("debug") {
+                signingConfig = signingConfigs.getByName("picbrain")
+            }
+            getByName("release") {
+                signingConfig = signingConfigs.getByName("picbrain")
+                isMinifyEnabled = false
+            }
+        }
+    }
 }
 
 kotlin {
