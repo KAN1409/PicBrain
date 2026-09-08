@@ -3,7 +3,7 @@ package com.kareem.picbrain.data.ocr
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
-import cz.adaptech.tesseract4android.TessBaseAPI
+import com.googlecode.tesseract.android.TessBaseAPI
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -27,7 +27,7 @@ class TesseractArabicOcrEngine(
 
             try {
                 api.setImage(bitmap)
-                val raw = api.utF8Text.orEmpty()
+                val raw = api.getUTF8Text().orEmpty()
                 val arabicRelevant = retainArabicLines(raw)
                 OcrResult(
                     rawText = arabicRelevant,
