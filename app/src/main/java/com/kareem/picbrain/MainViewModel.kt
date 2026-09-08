@@ -11,19 +11,19 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import com.kareem.picbrain.data.db.MediaItemEntity
 import com.kareem.picbrain.data.media.MediaIndexer
 import com.kareem.picbrain.data.media.MediaStoreObserver
 import com.kareem.picbrain.data.ocr.OcrWorker
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import com.kareem.picbrain.data.ocr.normalizeOcrText
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalCoroutinesApi::class)
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val db = (app as PicBrainApp).database
     private val dao = db.mediaItemDao()
@@ -41,9 +41,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val ocrFailedCount = dao.observeOcrFailedCount().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val recentMedia = dao.observeRecent().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val recentScreenshots = dao.observeRecentScreenshots().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-    val searchResults = searchQuery
-        .flatMapLatest { q -> if (q.isBlank()) dao.observeRecentScreenshots() else dao.observeScreenshotSearch(q.trim().lowercase()) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val searchResults = combine(searchQuery, dao.observeOcrSearchCorpus()) { rawQuery, corpus ->
+        searchScreenshots(rawQuery, corpus)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     var status by mutableStateOf("Ready")
         private set
@@ -53,7 +54,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(getApplication(), permission) == PackageManager.PERMISSION_GRANTED
 
-    fun setSearchQuery(value: String) { searchQuery.value = value }
+    fun setSearchQuery(value: String) {
+        searchQuery.value = value
+    }
 
     fun startMediaMonitoring() {
         if (monitoring) {
@@ -113,6 +116,45 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .onFailure { status = "Index failed: ${it.message ?: "unknown error"}" }
             isSyncing = false
         }
+    }
+
+    private fun searchScreenshots(rawQuery: String, corpus: List<MediaItemEntity>): List<MediaItemEntity> {
+        val normalizedQuery = normalizeOcrText(rawQuery)
+        if (normalizedQuery.isBlank()) return emptyList()
+
+        val tokens = normalizedQuery.split(' ').filter { it.length >= 2 || it.any(Char::isDigit) }.distinct()
+        if (tokens.isEmpty()) return emptyList()
+
+        data class RankedItem(
+            val item: MediaItemEntity,
+            val exactPhrase: Boolean,
+            val tokenHits: Int,
+            val dateMillis: Long
+        )
+
+        return corpus.asSequence()
+            .mapNotNull { item ->
+                val searchable = normalizeOcrText(item.ocrText.orEmpty())
+                if (searchable.isBlank()) return@mapNotNull null
+
+                val tokenHits = tokens.count { token -> searchable.contains(token) }
+                if (tokenHits != tokens.size) return@mapNotNull null
+
+                RankedItem(
+                    item = item,
+                    exactPhrase = searchable.contains(normalizedQuery),
+                    tokenHits = tokenHits,
+                    dateMillis = item.dateTakenMillis ?: item.dateAddedSeconds * 1000
+                )
+            }
+            .sortedWith(
+                compareByDescending<RankedItem> { it.exactPhrase }
+                    .thenByDescending { it.tokenHits }
+                    .thenByDescending { it.dateMillis }
+            )
+            .take(200)
+            .map { it.item }
+            .toList()
     }
 
     override fun onCleared() {
