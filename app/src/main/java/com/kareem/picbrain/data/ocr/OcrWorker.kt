@@ -7,6 +7,7 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import com.kareem.picbrain.PicBrainApp
 
 class OcrWorker(
@@ -19,9 +20,12 @@ class OcrWorker(
 
         val app = applicationContext as PicBrainApp
         val dao = app.database.mediaItemDao()
-        val processor = ScreenshotOcrProcessor(dao, MlKitOcrEngine(applicationContext))
+        val engine = HybridOcrEngine(applicationContext)
+        val processor = ScreenshotOcrProcessor(dao, engine)
 
-        return runCatching {
+        return try {
+            dao.resetOcrFromOlderEngines(HybridOcrEngine.ID)
+
             var totalAttempted = 0
             var totalSuccess = 0
             var totalFailed = 0
@@ -33,7 +37,7 @@ class OcrWorker(
                 totalFailed += batch.failed
 
                 setProgress(
-                    androidx.work.workDataOf(
+                    workDataOf(
                         KEY_ATTEMPTED to totalAttempted,
                         KEY_SUCCESS to totalSuccess,
                         KEY_FAILED to totalFailed
@@ -44,14 +48,16 @@ class OcrWorker(
             }
 
             Result.success(
-                androidx.work.workDataOf(
+                workDataOf(
                     KEY_ATTEMPTED to totalAttempted,
                     KEY_SUCCESS to totalSuccess,
                     KEY_FAILED to totalFailed
                 )
             )
-        }.getOrElse {
+        } catch (_: Throwable) {
             Result.retry()
+        } finally {
+            engine.close()
         }
     }
 
