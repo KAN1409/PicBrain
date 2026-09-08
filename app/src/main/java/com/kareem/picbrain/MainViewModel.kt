@@ -23,6 +23,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.min
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val db = (app as PicBrainApp).database
@@ -122,13 +124,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val normalizedQuery = normalizeOcrText(rawQuery)
         if (normalizedQuery.isBlank()) return emptyList()
 
-        val tokens = normalizedQuery.split(' ').filter { it.length >= 2 || it.any(Char::isDigit) }.distinct()
-        if (tokens.isEmpty()) return emptyList()
+        val queryTokens = normalizedQuery.split(' ')
+            .filter { it.length >= 2 || it.any(Char::isDigit) }
+            .distinct()
+        if (queryTokens.isEmpty()) return emptyList()
 
         data class RankedItem(
             val item: MediaItemEntity,
             val exactPhrase: Boolean,
-            val tokenHits: Int,
+            val exactTokenCount: Int,
+            val fuzzyDistance: Int,
             val dateMillis: Long
         )
 
@@ -136,25 +141,79 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             .mapNotNull { item ->
                 val searchable = normalizeOcrText(item.ocrText.orEmpty())
                 if (searchable.isBlank()) return@mapNotNull null
+                val corpusTokens = searchable.split(' ').filter(String::isNotBlank).distinct()
 
-                val tokenHits = tokens.count { token -> searchable.contains(token) }
-                if (tokenHits != tokens.size) return@mapNotNull null
+                var exactCount = 0
+                var totalDistance = 0
+                for (queryToken in queryTokens) {
+                    if (searchable.contains(queryToken)) {
+                        exactCount++
+                        continue
+                    }
+
+                    val maxDistance = fuzzyTolerance(queryToken)
+                    if (maxDistance == 0) return@mapNotNull null
+                    val bestDistance = corpusTokens.asSequence()
+                        .filter { abs(it.length - queryToken.length) <= maxDistance }
+                        .map { boundedLevenshtein(queryToken, it, maxDistance) }
+                        .filter { it <= maxDistance }
+                        .minOrNull()
+                        ?: return@mapNotNull null
+                    totalDistance += bestDistance
+                }
 
                 RankedItem(
                     item = item,
                     exactPhrase = searchable.contains(normalizedQuery),
-                    tokenHits = tokenHits,
+                    exactTokenCount = exactCount,
+                    fuzzyDistance = totalDistance,
                     dateMillis = item.dateTakenMillis ?: item.dateAddedSeconds * 1000
                 )
             }
             .sortedWith(
                 compareByDescending<RankedItem> { it.exactPhrase }
-                    .thenByDescending { it.tokenHits }
+                    .thenByDescending { it.exactTokenCount }
+                    .thenBy { it.fuzzyDistance }
                     .thenByDescending { it.dateMillis }
             )
             .take(200)
             .map { it.item }
             .toList()
+    }
+
+    private fun fuzzyTolerance(token: String): Int = when {
+        token.any(Char::isDigit) -> 0
+        token.length < 4 -> 0
+        token.length <= 6 -> 1
+        else -> 2
+    }
+
+    private fun boundedLevenshtein(left: String, right: String, maxDistance: Int): Int {
+        if (left == right) return 0
+        if (abs(left.length - right.length) > maxDistance) return maxDistance + 1
+        if (left.isEmpty()) return right.length
+        if (right.isEmpty()) return left.length
+
+        var previous = IntArray(right.length + 1) { it }
+        var current = IntArray(right.length + 1)
+
+        for (i in 1..left.length) {
+            current[0] = i
+            var rowMinimum = current[0]
+            for (j in 1..right.length) {
+                val substitutionCost = if (left[i - 1] == right[j - 1]) 0 else 1
+                current[j] = min(
+                    min(current[j - 1] + 1, previous[j] + 1),
+                    previous[j - 1] + substitutionCost
+                )
+                rowMinimum = min(rowMinimum, current[j])
+            }
+            if (rowMinimum > maxDistance) return maxDistance + 1
+            val swap = previous
+            previous = current
+            current = swap
+        }
+        return previous[right.length]
     }
 
     override fun onCleared() {
