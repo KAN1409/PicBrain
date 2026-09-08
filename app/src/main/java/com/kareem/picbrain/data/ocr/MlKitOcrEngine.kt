@@ -9,15 +9,15 @@ import kotlinx.coroutines.tasks.await
 
 class MlKitOcrEngine(private val context: Context) : OcrEngine {
     override val id: String = "mlkit-latin-16.0.1"
+    private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
     override suspend fun recognize(uri: Uri): OcrResult {
         val image = InputImage.fromFilePath(context, uri)
-        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        return try {
-            val result = recognizer.process(image).await()
-            OcrResult(result.text, normalizeOcrText(result.text))
-        } finally {
-            recognizer.close()
-        }
+        val result = recognizer.process(image).await()
+        return OcrResult(result.text, normalizeOcrText(result.text))
+    }
+
+    override fun close() {
+        recognizer.close()
     }
 }
