@@ -19,7 +19,7 @@ interface MediaItemDao {
     @Query("SELECT * FROM media_items WHERE isScreenshot = 1 ORDER BY COALESCE(dateTakenMillis, dateAddedSeconds * 1000) DESC LIMIT :limit")
     fun observeRecentScreenshots(limit: Int = 200): Flow<List<MediaItemEntity>>
 
-    @Query("SELECT * FROM media_items WHERE isScreenshot = 1 AND ocrState IN ('NOT_PROCESSED','FAILED') ORDER BY dateAddedSeconds DESC LIMIT :limit")
+    @Query("SELECT * FROM media_items WHERE isScreenshot = 1 AND ocrState = 'NOT_PROCESSED' ORDER BY dateAddedSeconds DESC LIMIT :limit")
     suspend fun getScreenshotsNeedingOcr(limit: Int = 25): List<MediaItemEntity>
 
     @Query("SELECT * FROM media_items WHERE isScreenshot = 1 AND ocrNormalizedText LIKE '%' || :query || '%' ORDER BY COALESCE(dateTakenMillis, dateAddedSeconds * 1000) DESC LIMIT :limit")
@@ -33,6 +33,12 @@ interface MediaItemDao {
 
     @Query("SELECT COUNT(*) FROM media_items WHERE isScreenshot = 1 AND ocrState = 'DONE'")
     fun observeOcrDoneCount(): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM media_items WHERE isScreenshot = 1 AND ocrState = 'NOT_PROCESSED'")
+    fun observeOcrPendingCount(): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM media_items WHERE isScreenshot = 1 AND ocrState = 'FAILED'")
+    fun observeOcrFailedCount(): Flow<Int>
 
     @Query("SELECT MAX(dateAddedSeconds) FROM media_items")
     suspend fun latestDateAddedSeconds(): Long?
