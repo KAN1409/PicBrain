@@ -1,6 +1,7 @@
 package com.kareem.picbrain.data.ocr
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import com.googlecode.tesseract.android.TessBaseAPI
@@ -9,11 +10,12 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.min
 
 class TesseractArabicOcrEngine(
     private val context: Context
 ) : OcrEngine {
-    override val id: String = "tesseract-5.5.1-ara-fast"
+    override val id: String = "tesseract-5.5.1-ara-best-v2"
 
     private val mutex = Mutex()
     private var tess: TessBaseAPI? = null
@@ -21,12 +23,14 @@ class TesseractArabicOcrEngine(
     override suspend fun recognize(uri: Uri): OcrResult = withContext(Dispatchers.IO) {
         mutex.withLock {
             val api = getOrCreateApi()
-            val bitmap = context.contentResolver.openInputStream(uri)?.use { input ->
+            val source = context.contentResolver.openInputStream(uri)?.use { input ->
                 BitmapFactory.decodeStream(input)
             } ?: error("Unable to decode image for Arabic OCR")
+            val working = scaleForOcr(source)
 
             try {
-                api.setImage(bitmap)
+                api.setPageSegMode(TessBaseAPI.PageSegMode.PSM_AUTO)
+                api.setImage(working)
                 val raw = api.getUTF8Text().orEmpty()
                 val arabicRelevant = retainArabicLines(raw)
                 OcrResult(
@@ -35,7 +39,8 @@ class TesseractArabicOcrEngine(
                 )
             } finally {
                 api.clear()
-                bitmap.recycle()
+                if (working !== source) working.recycle()
+                source.recycle()
             }
         }
     }
@@ -52,11 +57,25 @@ class TesseractArabicOcrEngine(
         return api
     }
 
+    private fun scaleForOcr(source: Bitmap): Bitmap {
+        if (source.width <= 0 || source.height <= 0) return source
+        if (source.width >= TARGET_WIDTH) return source
+
+        val widthScale = TARGET_WIDTH.toFloat() / source.width.toFloat()
+        val pixelScale = kotlin.math.sqrt(MAX_PIXELS.toDouble() / (source.width.toLong() * source.height.toLong()).toDouble()).toFloat()
+        val scale = min(MAX_SCALE, min(widthScale, pixelScale))
+        if (scale <= 1.05f) return source
+
+        val targetWidth = (source.width * scale).toInt().coerceAtLeast(source.width)
+        val targetHeight = (source.height * scale).toInt().coerceAtLeast(source.height)
+        return Bitmap.createScaledBitmap(source, targetWidth, targetHeight, true)
+    }
+
     private fun prepareLanguageData(): File {
-        val root = File(context.filesDir, "tesseract")
+        val root = File(context.filesDir, MODEL_DIRECTORY)
         val tessDataDir = File(root, "tessdata")
         val destination = File(tessDataDir, ASSET_FILE_NAME)
-        if (destination.isFile && destination.length() > 0L) return root
+        if (destination.isFile && destination.length() > MIN_MODEL_BYTES) return root
 
         check(tessDataDir.exists() || tessDataDir.mkdirs()) {
             "Unable to create Tesseract data directory"
@@ -66,6 +85,7 @@ class TesseractArabicOcrEngine(
         context.assets.open("tessdata/$ASSET_FILE_NAME").use { input ->
             temp.outputStream().use { output -> input.copyTo(output) }
         }
+        check(temp.length() > MIN_MODEL_BYTES) { "Arabic traineddata asset is invalid" }
         check(temp.renameTo(destination) || runCatching {
             temp.copyTo(destination, overwrite = true)
             temp.delete()
@@ -96,6 +116,11 @@ class TesseractArabicOcrEngine(
     companion object {
         private const val LANGUAGE = "ara"
         private const val ASSET_FILE_NAME = "ara.traineddata"
+        private const val MODEL_DIRECTORY = "tesseract-ara-best-v2"
+        private const val TARGET_WIDTH = 1800
+        private const val MAX_SCALE = 2.0f
+        private const val MAX_PIXELS = 8_000_000L
+        private const val MIN_MODEL_BYTES = 1_000_000L
 
         private val ARABIC_BLOCKS = setOf(
             Character.UnicodeBlock.ARABIC,
