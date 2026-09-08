@@ -52,6 +52,9 @@ interface MediaItemDao {
     @Query("UPDATE media_items SET ocrState='NOT_PROCESSED', ocrText=NULL, ocrNormalizedText=NULL, ocrEngine=NULL, ocrProcessedAtMillis=NULL, ocrError=NULL WHERE isScreenshot=1")
     suspend fun resetScreenshotOcr()
 
+    @Query("UPDATE media_items SET ocrState='NOT_PROCESSED', ocrText=NULL, ocrNormalizedText=NULL, ocrEngine=NULL, ocrProcessedAtMillis=NULL, ocrError=NULL WHERE isScreenshot=1 AND (ocrEngine IS NULL OR ocrEngine != :currentEngine)")
+    suspend fun resetOcrFromOlderEngines(currentEngine: String)
+
     @Query("DELETE FROM media_items WHERE indexedAtMillis != :scanMarker")
     suspend fun deleteNotSeenInScan(scanMarker: Long)
 
