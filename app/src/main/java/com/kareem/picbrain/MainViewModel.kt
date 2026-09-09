@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
@@ -59,6 +60,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var semanticModelInstalled by mutableStateOf(semanticModelStore.isInstalled())
         private set
+    var isSemanticModelDownloading by mutableStateOf(false)
+        private set
+    var semanticDownloadProgress by mutableIntStateOf(0)
+        private set
 
     fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(getApplication(), permission) == PackageManager.PERMISSION_GRANTED
@@ -108,6 +113,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ExistingWorkPolicy.KEEP,
             request
         )
+    }
+
+    fun downloadSemanticModel() {
+        if (isSemanticModelDownloading) return
+        viewModelScope.launch {
+            isSemanticModelDownloading = true
+            semanticDownloadProgress = 0
+            status = "Downloading official EmbeddingGemma model…"
+            runCatching {
+                semanticModelStore.downloadOfficial { progress ->
+                    semanticDownloadProgress = progress
+                    status = "Downloading EmbeddingGemma… $progress%"
+                }
+            }.onSuccess { bytes ->
+                semanticModelInstalled = true
+                semanticDownloadProgress = 100
+                status = "Semantic model installed (${bytes / (1024 * 1024)} MB). Building local embeddings…"
+                scheduleSemanticIndexing()
+            }.onFailure { error ->
+                semanticModelInstalled = semanticModelStore.isInstalled()
+                semanticDownloadProgress = 0
+                status = "Semantic model download failed: ${error.message ?: "unknown error"}"
+            }
+            isSemanticModelDownloading = false
+        }
     }
 
     fun importSemanticModel(uri: Uri) {
