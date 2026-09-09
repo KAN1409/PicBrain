@@ -13,8 +13,8 @@ android {
         applicationId = "com.kareem.picbrain"
         minSdk = 29
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.0.9"
+        versionCode = 10
+        versionName = "0.0.10"
     }
 
     compileOptions {
