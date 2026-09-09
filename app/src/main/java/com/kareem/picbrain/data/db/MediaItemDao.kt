@@ -24,6 +24,9 @@ interface MediaItemDao {
     @Query("DELETE FROM media_embeddings WHERE modelId=:modelId AND dimensions=:dimensions")
     suspend fun deleteEmbeddings(modelId: String, dimensions: Int)
 
+    @Query("DELETE FROM media_embeddings WHERE mediaId=:mediaId AND modelId=:modelId AND dimensions=:dimensions")
+    suspend fun deleteEmbeddingsForMedia(mediaId: Long, modelId: String, dimensions: Int)
+
     @RawQuery
     suspend fun searchMediaIds(query: SupportSQLiteQuery): List<Long>
 
