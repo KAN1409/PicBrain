@@ -76,9 +76,13 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
         }
     }
 
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         permissionGranted = hasImageReadPermission(vm)
         if (permissionGranted) vm.startMediaMonitoring()
+    }
+
+    val modelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.importSemanticModel(uri)
     }
 
     DisposableEffect(permissionGranted) {
@@ -101,7 +105,7 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
 
         if (!permissionGranted) {
             Text("PicBrain builds a read-only local index. Your originals are never copied, moved, or modified.")
-            Button(onClick = { launcher.launch(permissions) }) { Text("Allow photo access") }
+            Button(onClick = { permissionLauncher.launch(permissions) }) { Text("Allow photo access") }
             return@Column
         }
 
@@ -113,7 +117,14 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
                 filter = if (it.isBlank()) LibraryFilter.SCREENSHOTS else LibraryFilter.SEARCH
             },
             label = { Text("Search screenshots in Arabic or English") },
-            supportingText = { Text("Words can be in any order. Arabic spelling variants and Arabic digits are normalized locally.") },
+            supportingText = {
+                Text(
+                    if (vm.semanticModelInstalled)
+                        "Hybrid search: exact + OCR fuzzy + local semantic meaning."
+                    else
+                        "Exact + OCR fuzzy search active. Install EmbeddingGemma to enable semantic meaning."
+                )
+            },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
@@ -143,8 +154,12 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
             Button(onClick = vm::rebuildIndex, enabled = !vm.isSyncing) {
                 Text(if (vm.isSyncing) "Syncing…" else "Sync")
             }
-            Button(onClick = vm::scheduleBackgroundOcr) {
-                Text("Continue OCR")
+            Button(onClick = vm::scheduleBackgroundOcr) { Text("Continue OCR") }
+            Button(onClick = {
+                if (vm.semanticModelInstalled) vm.scheduleSemanticIndexing()
+                else modelLauncher.launch(arrayOf("application/octet-stream", "application/x-tflite", "*/*"))
+            }) {
+                Text(if (vm.semanticModelInstalled) "Semantic index" else "Install semantic model")
             }
         }
 
@@ -162,7 +177,10 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
 
         Text(vm.status, style = MaterialTheme.typography.bodySmall)
         Text(
-            "Retrieval is fully local. Search now normalizes Arabic/English text and matches multiple words even when their order differs. OCR recognition quality itself is still limited by the current local engine.",
+            if (vm.semanticModelInstalled)
+                "Semantic retrieval runs fully on-device. No screenshot text is uploaded for embedding."
+            else
+                "Semantic search is ready but the EmbeddingGemma model is not bundled because its weights require accepting Google's Gemma terms. Lexical and fuzzy retrieval continue to work normally.",
             style = MaterialTheme.typography.bodySmall
         )
 
