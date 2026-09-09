@@ -4,38 +4,72 @@ import androidx.sqlite.db.SimpleSQLiteQuery
 import com.kareem.picbrain.data.db.MediaItemDao
 import com.kareem.picbrain.data.db.MediaItemEntity
 import com.kareem.picbrain.data.ocr.normalizeOcrText
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.abs
 import kotlin.math.min
 
+data class SemanticHit(
+    val mediaId: Long,
+    val score: Float
+)
+
+data class SemanticDiagnostics(
+    val bestScore: Float? = null,
+    val acceptedCount: Int = 0,
+    val evaluatedCount: Int = 0,
+    val threshold: Float = MIN_SEMANTIC_SCORE
+)
+
 interface SemanticSearchEngine {
-    suspend fun search(query: String, limit: Int): List<Long>
+    suspend fun search(query: String, limit: Int): List<SemanticHit>
 }
 
 class DisabledSemanticSearchEngine : SemanticSearchEngine {
-    override suspend fun search(query: String, limit: Int): List<Long> = emptyList()
+    override suspend fun search(query: String, limit: Int): List<SemanticHit> = emptyList()
 }
 
 class HybridSearchRepository(
     private val dao: MediaItemDao,
     private val semantic: SemanticSearchEngine = DisabledSemanticSearchEngine()
 ) {
+    private val _semanticDiagnostics = MutableStateFlow(SemanticDiagnostics())
+    val semanticDiagnostics: StateFlow<SemanticDiagnostics> = _semanticDiagnostics.asStateFlow()
+
     suspend fun search(
         rawQuery: String,
         corpus: List<MediaItemEntity>,
         limit: Int = 200
     ): List<MediaItemEntity> {
         val normalizedQuery = normalizeOcrText(rawQuery)
-        if (normalizedQuery.isBlank()) return emptyList()
+        if (normalizedQuery.isBlank()) {
+            _semanticDiagnostics.value = SemanticDiagnostics()
+            return emptyList()
+        }
 
         val queryTokens = normalizedQuery.split(' ')
             .filter { it.length >= 2 || it.any(Char::isDigit) }
             .distinct()
-        if (queryTokens.isEmpty()) return emptyList()
+        if (queryTokens.isEmpty()) {
+            _semanticDiagnostics.value = SemanticDiagnostics()
+            return emptyList()
+        }
 
         val byId = corpus.associateBy(MediaItemEntity::mediaId)
         val lexicalIds = lexicalCandidates(queryTokens, limit = 300)
         val fuzzyIds = fuzzyCandidates(queryTokens, corpus, limit = 300)
-        val semanticIds = semantic.search(normalizedQuery, limit = 300)
+        val allSemanticHits = semantic.search(normalizedQuery, limit = 300)
+        val semanticHits = allSemanticHits.filter { it.score >= MIN_SEMANTIC_SCORE }
+        val semanticIds = semanticHits.map(SemanticHit::mediaId)
+        val semanticScores = allSemanticHits.associate { it.mediaId to it.score }
+
+        _semanticDiagnostics.value = SemanticDiagnostics(
+            bestScore = allSemanticHits.maxOfOrNull(SemanticHit::score),
+            acceptedCount = semanticHits.size,
+            evaluatedCount = allSemanticHits.size,
+            threshold = MIN_SEMANTIC_SCORE
+        )
 
         val score = linkedMapOf<Long, Double>()
         addRrf(score, lexicalIds, weight = 1.35)
@@ -49,6 +83,7 @@ class HybridSearchRepository(
                 RankedItem(
                     item = item,
                     score = rrfScore,
+                    semanticScore = semanticScores[mediaId],
                     exactPhrase = searchable.contains(normalizedQuery),
                     exactTokenCount = queryTokens.count(searchable::contains),
                     dateMillis = item.dateTakenMillis ?: item.dateAddedSeconds * 1000
@@ -58,6 +93,7 @@ class HybridSearchRepository(
                 compareByDescending<RankedItem> { it.exactPhrase }
                     .thenByDescending { it.exactTokenCount }
                     .thenByDescending { it.score }
+                    .thenByDescending { it.semanticScore ?: Float.NEGATIVE_INFINITY }
                     .thenByDescending { it.dateMillis }
             )
             .take(limit)
@@ -180,6 +216,7 @@ class HybridSearchRepository(
     private data class RankedItem(
         val item: MediaItemEntity,
         val score: Double,
+        val semanticScore: Float?,
         val exactPhrase: Boolean,
         val exactTokenCount: Int,
         val dateMillis: Long
@@ -187,5 +224,8 @@ class HybridSearchRepository(
 
     companion object {
         private const val RRF_K = 60.0
+        const val MIN_SEMANTIC_SCORE = 0.50f
     }
 }
+
+private const val MIN_SEMANTIC_SCORE = HybridSearchRepository.MIN_SEMANTIC_SCORE
