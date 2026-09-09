@@ -1,8 +1,6 @@
 package com.kareem.picbrain
 
 import android.Manifest
-import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -38,7 +36,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -55,11 +52,8 @@ class MainActivity : ComponentActivity() {
 
 private enum class LibraryFilter { ALL, SCREENSHOTS, SEARCH }
 
-private const val EMBEDDING_GEMMA_INFO_URL = "https://ai.google.dev/gemma/docs/embeddinggemma"
-
 @Composable
 private fun PicBrainHome(vm: MainViewModel = viewModel()) {
-    val context = LocalContext.current
     val mediaCount by vm.mediaCount.collectAsStateWithLifecycle()
     val screenshotCount by vm.screenshotCount.collectAsStateWithLifecycle()
     val ocrDoneCount by vm.ocrDoneCount.collectAsStateWithLifecycle()
@@ -129,7 +123,7 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
                     if (vm.semanticModelInstalled)
                         "Hybrid search: exact + OCR fuzzy + local semantic meaning."
                     else
-                        "Exact + OCR fuzzy search active. Add EmbeddingGemma to enable semantic meaning."
+                        "Exact + OCR fuzzy search active. Install EmbeddingGemma for semantic meaning."
                 )
             },
             singleLine = true,
@@ -169,23 +163,31 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
 
         if (!vm.semanticModelInstalled) {
             Text(
-                "EmbeddingGemma requires accepting Google's Gemma terms before downloading the model. " +
-                    "Get the model from Google's official page, then import the downloaded MediaPipe-compatible model file here.",
+                "PicBrain can now download Google's official MediaPipe EmbeddingGemma model directly. " +
+                    "The model stays on your device after installation.",
                 style = MaterialTheme.typography.bodySmall
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(EMBEDDING_GEMMA_INFO_URL))
-                    runCatching { context.startActivity(intent) }
-                        .onFailure { vm.reportStatus("Unable to open the EmbeddingGemma page") }
-                }) {
-                    Text("Get EmbeddingGemma")
-                }
-                OutlinedButton(onClick = {
-                    modelLauncher.launch(arrayOf("application/octet-stream", "application/x-tflite", "*/*"))
-                }) {
-                    Text("Import model file")
-                }
+            Button(
+                onClick = vm::downloadSemanticModel,
+                enabled = !vm.isSemanticModelDownloading
+            ) {
+                Text(
+                    if (vm.isSemanticModelDownloading)
+                        "Downloading ${vm.semanticDownloadProgress}%"
+                    else
+                        "Download semantic model"
+                )
+            }
+            if (vm.isSemanticModelDownloading) {
+                LinearProgressIndicator(
+                    progress = { vm.semanticDownloadProgress / 100f },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            OutlinedButton(onClick = {
+                modelLauncher.launch(arrayOf("application/octet-stream", "application/x-tflite", "*/*"))
+            }) {
+                Text("Import model file manually")
             }
         }
 
@@ -204,9 +206,9 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
         Text(vm.status, style = MaterialTheme.typography.bodySmall)
         Text(
             if (vm.semanticModelInstalled)
-                "Semantic retrieval runs fully on-device. No screenshot text is uploaded for embedding."
+                "Semantic retrieval runs fully on-device. Screenshot text is not uploaded for embedding."
             else
-                "Lexical and fuzzy retrieval continue to work normally until a valid local EmbeddingGemma model is installed.",
+                "Lexical and fuzzy retrieval remain active until the semantic model is installed.",
             style = MaterialTheme.typography.bodySmall
         )
 
