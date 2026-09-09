@@ -50,6 +50,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val recentMedia = dao.observeRecent().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val recentScreenshots = dao.observeRecentScreenshots().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val semanticDiagnostics = searchRepository.semanticDiagnostics
+    val semanticScores = searchRepository.semanticScores
 
     val searchResults = combine(searchQuery, dao.observeOcrSearchCorpus()) { rawQuery, corpus ->
         searchRepository.search(rawQuery, corpus)
