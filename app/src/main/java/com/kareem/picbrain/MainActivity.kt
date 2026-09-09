@@ -42,6 +42,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.kareem.picbrain.data.db.MediaItemEntity
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,6 +63,8 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
     val recentMedia by vm.recentMedia.collectAsStateWithLifecycle()
     val recentScreenshots by vm.recentScreenshots.collectAsStateWithLifecycle()
     val searchResults by vm.searchResults.collectAsStateWithLifecycle()
+    val semanticDiagnostics by vm.semanticDiagnostics.collectAsStateWithLifecycle()
+    val semanticScores by vm.semanticScores.collectAsStateWithLifecycle()
     var filter by remember { mutableStateOf(LibraryFilter.ALL) }
     var query by remember { mutableStateOf("") }
     var permissionGranted by remember { mutableStateOf(hasImageReadPermission(vm)) }
@@ -121,7 +124,7 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
             supportingText = {
                 Text(
                     if (vm.semanticModelInstalled)
-                        "Hybrid search: exact + OCR fuzzy + local semantic meaning."
+                        "Hybrid search: exact + OCR fuzzy + filtered local semantic meaning."
                     else
                         "Exact + OCR fuzzy search active. Install EmbeddingGemma for semantic meaning."
                 )
@@ -163,7 +166,7 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
 
         if (!vm.semanticModelInstalled) {
             Text(
-                "PicBrain can now download Google's official MediaPipe EmbeddingGemma model directly. " +
+                "PicBrain can download Google's official MediaPipe EmbeddingGemma model directly. " +
                     "The model stays on your device after installation.",
                 style = MaterialTheme.typography.bodySmall
             )
@@ -206,7 +209,7 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
         Text(vm.status, style = MaterialTheme.typography.bodySmall)
         Text(
             if (vm.semanticModelInstalled)
-                "Semantic retrieval runs fully on-device. Screenshot text is not uploaded for embedding."
+                "Semantic retrieval runs fully on-device. Weak semantic matches are filtered before ranking."
             else
                 "Lexical and fuzzy retrieval remain active until the semantic model is installed.",
             style = MaterialTheme.typography.bodySmall
@@ -221,12 +224,24 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
             style = MaterialTheme.typography.titleMedium
         )
 
-        val items = when (filter) {
-            LibraryFilter.ALL -> recentMedia
-            LibraryFilter.SCREENSHOTS -> recentScreenshots
-            LibraryFilter.SEARCH -> searchResults
+        if (filter == LibraryFilter.SEARCH && query.isNotBlank() && vm.semanticModelInstalled) {
+            val best = semanticDiagnostics.bestScore?.let(::formatScore) ?: "n/a"
+            Text(
+                "Semantic best: $best • threshold: ${formatScore(semanticDiagnostics.threshold)} • " +
+                    "accepted: ${semanticDiagnostics.acceptedCount}/${semanticDiagnostics.evaluatedCount}",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
-        MediaGrid(items, Modifier.weight(1f))
+
+        when (filter) {
+            LibraryFilter.ALL -> MediaGrid(recentMedia, modifier = Modifier.weight(1f))
+            LibraryFilter.SCREENSHOTS -> MediaGrid(recentScreenshots, modifier = Modifier.weight(1f))
+            LibraryFilter.SEARCH -> MediaGrid(
+                items = searchResults,
+                modifier = Modifier.weight(1f),
+                semanticScores = semanticScores
+            )
+        }
     }
 }
 
@@ -239,9 +254,13 @@ private fun CountBlock(label: String, value: Int) {
 }
 
 @Composable
-private fun MediaGrid(items: List<MediaItemEntity>, modifier: Modifier = Modifier) {
+private fun MediaGrid(
+    items: List<MediaItemEntity>,
+    modifier: Modifier = Modifier,
+    semanticScores: Map<Long, Float> = emptyMap()
+) {
     if (items.isEmpty()) {
-        Text("No matching indexed images.")
+        Text("No confident matching indexed images.")
         return
     }
 
@@ -259,6 +278,12 @@ private fun MediaGrid(items: List<MediaItemEntity>, modifier: Modifier = Modifie
                     modifier = Modifier.fillMaxWidth().height(128.dp).clip(RoundedCornerShape(10.dp)),
                     contentScale = ContentScale.Crop
                 )
+                semanticScores[item.mediaId]?.let { score ->
+                    Text(
+                        text = "Semantic score: ${formatScore(score)}",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
                 if (item.isScreenshot) {
                     Text(
                         text = when (item.ocrState) {
@@ -275,6 +300,8 @@ private fun MediaGrid(items: List<MediaItemEntity>, modifier: Modifier = Modifie
         }
     }
 }
+
+private fun formatScore(value: Float): String = String.format(Locale.US, "%.3f", value)
 
 private fun hasImageReadPermission(vm: MainViewModel): Boolean = when {
     Build.VERSION.SDK_INT >= 34 ->
