@@ -26,26 +26,67 @@ class SemanticModelStore(private val context: Context) {
         check(parent.exists() || parent.mkdirs()) { "Unable to create model directory" }
 
         val temp = File(parent, "$MODEL_FILE_NAME.tmp")
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            temp.outputStream().use { output -> input.copyTo(output) }
-        } ?: error("Unable to read selected model")
+        if (temp.exists()) temp.delete()
 
-        check(temp.length() > MIN_MODEL_BYTES) {
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                temp.outputStream().use { output -> input.copyTo(output) }
+            } ?: error("Unable to read selected model")
+
+            check(temp.length() > MIN_MODEL_BYTES) {
+                "Selected file is too small to be an EmbeddingGemma task model"
+            }
+
+            validateModelFile(temp)
+
+            if (modelFile.exists() && !modelFile.delete()) {
+                error("Unable to replace existing semantic model")
+            }
+            check(temp.renameTo(modelFile) || runCatching {
+                temp.copyTo(modelFile, overwrite = true)
+                temp.delete()
+                true
+            }.getOrDefault(false)) { "Unable to install semantic model" }
+
+            modelFile.length()
+        } catch (error: Throwable) {
             temp.delete()
-            "Selected file is too small to be an EmbeddingGemma task model"
+            throw error
         }
+    }
 
-        if (modelFile.exists() && !modelFile.delete()) {
-            temp.delete()
-            error("Unable to replace existing semantic model")
+    private fun validateModelFile(file: File) {
+        val embedder = runCatching { TextEmbedder.createFromFile(context, file.absolutePath) }
+            .getOrElse { cause ->
+                throw IllegalArgumentException(
+                    "This is not a MediaPipe-compatible EmbeddingGemma text-embedding model",
+                    cause
+                )
+            }
+
+        try {
+            val formatContext = TextEmbedder.TextFormatContext.builder()
+                .setTaskType(TextEmbedder.EmbeddingType.RETRIEVAL_QUERY)
+                .setRole(TextEmbedder.TextRole.QUERY)
+                .build()
+            val dimensions = embedder.embed("PicBrain model validation", formatContext)
+                .embeddingResult()
+                .embeddings()
+                .firstOrNull()
+                ?.floatEmbedding()
+                ?.size
+                ?: 0
+            check(dimensions >= EmbeddingGemmaEmbedder.TARGET_DIMENSIONS) {
+                "Model output has $dimensions dimensions; PicBrain requires at least ${EmbeddingGemmaEmbedder.TARGET_DIMENSIONS}"
+            }
+        } catch (error: Throwable) {
+            throw IllegalArgumentException(
+                "The selected model could not produce EmbeddingGemma retrieval embeddings",
+                error
+            )
+        } finally {
+            embedder.close()
         }
-        check(temp.renameTo(modelFile) || runCatching {
-            temp.copyTo(modelFile, overwrite = true)
-            temp.delete()
-            true
-        }.getOrDefault(false)) { "Unable to install semantic model" }
-
-        modelFile.length()
     }
 
     companion object {
