@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.abs
 import kotlin.math.min
 
+private const val DEFAULT_MIN_SEMANTIC_SCORE = 0.50f
+
 data class SemanticHit(
     val mediaId: Long,
     val score: Float
@@ -19,7 +21,7 @@ data class SemanticDiagnostics(
     val bestScore: Float? = null,
     val acceptedCount: Int = 0,
     val evaluatedCount: Int = 0,
-    val threshold: Float = MIN_SEMANTIC_SCORE
+    val threshold: Float = DEFAULT_MIN_SEMANTIC_SCORE
 )
 
 interface SemanticSearchEngine {
@@ -37,6 +39,9 @@ class HybridSearchRepository(
     private val _semanticDiagnostics = MutableStateFlow(SemanticDiagnostics())
     val semanticDiagnostics: StateFlow<SemanticDiagnostics> = _semanticDiagnostics.asStateFlow()
 
+    private val _semanticScores = MutableStateFlow<Map<Long, Float>>(emptyMap())
+    val semanticScores: StateFlow<Map<Long, Float>> = _semanticScores.asStateFlow()
+
     suspend fun search(
         rawQuery: String,
         corpus: List<MediaItemEntity>,
@@ -44,7 +49,7 @@ class HybridSearchRepository(
     ): List<MediaItemEntity> {
         val normalizedQuery = normalizeOcrText(rawQuery)
         if (normalizedQuery.isBlank()) {
-            _semanticDiagnostics.value = SemanticDiagnostics()
+            clearSemanticDiagnostics()
             return emptyList()
         }
 
@@ -52,7 +57,7 @@ class HybridSearchRepository(
             .filter { it.length >= 2 || it.any(Char::isDigit) }
             .distinct()
         if (queryTokens.isEmpty()) {
-            _semanticDiagnostics.value = SemanticDiagnostics()
+            clearSemanticDiagnostics()
             return emptyList()
         }
 
@@ -64,6 +69,7 @@ class HybridSearchRepository(
         val semanticIds = semanticHits.map(SemanticHit::mediaId)
         val semanticScores = allSemanticHits.associate { it.mediaId to it.score }
 
+        _semanticScores.value = semanticScores
         _semanticDiagnostics.value = SemanticDiagnostics(
             bestScore = allSemanticHits.maxOfOrNull(SemanticHit::score),
             acceptedCount = semanticHits.size,
@@ -99,6 +105,11 @@ class HybridSearchRepository(
             .take(limit)
             .map(RankedItem::item)
             .toList()
+    }
+
+    private fun clearSemanticDiagnostics() {
+        _semanticScores.value = emptyMap()
+        _semanticDiagnostics.value = SemanticDiagnostics()
     }
 
     private suspend fun lexicalCandidates(tokens: List<String>, limit: Int): List<Long> {
@@ -224,8 +235,6 @@ class HybridSearchRepository(
 
     companion object {
         private const val RRF_K = 60.0
-        const val MIN_SEMANTIC_SCORE = 0.50f
+        const val MIN_SEMANTIC_SCORE = DEFAULT_MIN_SEMANTIC_SCORE
     }
 }
-
-private const val MIN_SEMANTIC_SCORE = HybridSearchRepository.MIN_SEMANTIC_SCORE
