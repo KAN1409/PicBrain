@@ -67,6 +67,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         searchQuery.value = value
     }
 
+    fun reportStatus(message: String) {
+        status = message
+    }
+
     fun startMediaMonitoring() {
         if (monitoring) {
             scheduleBackgroundOcr()
@@ -108,7 +112,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun importSemanticModel(uri: Uri) {
         viewModelScope.launch {
-            status = "Installing semantic model…"
+            status = "Validating semantic model…"
             runCatching { semanticModelStore.importFrom(uri) }
                 .onSuccess { bytes ->
                     semanticModelInstalled = true
