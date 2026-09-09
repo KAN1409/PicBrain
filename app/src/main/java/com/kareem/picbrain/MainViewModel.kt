@@ -2,6 +2,7 @@ package com.kareem.picbrain
 
 import android.app.Application
 import android.content.pm.PackageManager
+import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -11,11 +12,13 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
-import com.kareem.picbrain.data.db.MediaItemEntity
 import com.kareem.picbrain.data.media.MediaIndexer
 import com.kareem.picbrain.data.media.MediaStoreObserver
 import com.kareem.picbrain.data.ocr.OcrWorker
-import com.kareem.picbrain.data.ocr.normalizeOcrText
+import com.kareem.picbrain.data.search.EmbeddingGemmaSemanticEngine
+import com.kareem.picbrain.data.search.EmbeddingWorker
+import com.kareem.picbrain.data.search.HybridSearchRepository
+import com.kareem.picbrain.data.search.SemanticModelStore
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,8 +26,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlin.math.abs
-import kotlin.math.min
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val db = (app as PicBrainApp).database
@@ -32,6 +33,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val indexer = MediaIndexer(app, dao)
     private val observer = MediaStoreObserver(app.contentResolver, ::onMediaStoreChanged)
     private val workManager = WorkManager.getInstance(app)
+    private val semanticModelStore = SemanticModelStore(app)
+    private val semanticEngine = EmbeddingGemmaSemanticEngine(app, dao)
+    private val searchRepository = HybridSearchRepository(dao, semanticEngine)
+
     private var changeJob: Job? = null
     private var monitoring = false
     private val searchQuery = MutableStateFlow("")
@@ -45,12 +50,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val recentScreenshots = dao.observeRecentScreenshots().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val searchResults = combine(searchQuery, dao.observeOcrSearchCorpus()) { rawQuery, corpus ->
-        searchScreenshots(rawQuery, corpus)
+        searchRepository.search(rawQuery, corpus)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     var status by mutableStateOf("Ready")
         private set
     var isSyncing by mutableStateOf(false)
+        private set
+    var semanticModelInstalled by mutableStateOf(semanticModelStore.isInstalled())
         private set
 
     fun hasPermission(permission: String): Boolean =
@@ -63,6 +70,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun startMediaMonitoring() {
         if (monitoring) {
             scheduleBackgroundOcr()
+            scheduleSemanticIndexing()
             return
         }
         monitoring = true
@@ -86,6 +94,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ExistingWorkPolicy.KEEP,
             request
         )
+    }
+
+    fun scheduleSemanticIndexing() {
+        if (!semanticModelStore.isInstalled()) return
+        val request = OneTimeWorkRequestBuilder<EmbeddingWorker>().build()
+        workManager.enqueueUniqueWork(
+            EmbeddingWorker.UNIQUE_WORK_NAME,
+            ExistingWorkPolicy.KEEP,
+            request
+        )
+    }
+
+    fun importSemanticModel(uri: Uri) {
+        viewModelScope.launch {
+            status = "Installing semantic model…"
+            runCatching { semanticModelStore.importFrom(uri) }
+                .onSuccess { bytes ->
+                    semanticModelInstalled = true
+                    status = "Semantic model installed (${bytes / (1024 * 1024)} MB). Building local embeddings…"
+                    scheduleSemanticIndexing()
+                }
+                .onFailure { error ->
+                    semanticModelInstalled = semanticModelStore.isInstalled()
+                    status = "Semantic model install failed: ${error.message ?: "unknown error"}"
+                }
+        }
     }
 
     fun resetOcr() {
@@ -114,110 +148,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .onSuccess {
                     status = if (!silentSuccess) "Indexed ${it.indexed} images" else "Library is up to date"
                     scheduleBackgroundOcr()
+                    scheduleSemanticIndexing()
                 }
                 .onFailure { status = "Index failed: ${it.message ?: "unknown error"}" }
             isSyncing = false
         }
     }
 
-    private fun searchScreenshots(rawQuery: String, corpus: List<MediaItemEntity>): List<MediaItemEntity> {
-        val normalizedQuery = normalizeOcrText(rawQuery)
-        if (normalizedQuery.isBlank()) return emptyList()
-
-        val queryTokens = normalizedQuery.split(' ')
-            .filter { it.length >= 2 || it.any(Char::isDigit) }
-            .distinct()
-        if (queryTokens.isEmpty()) return emptyList()
-
-        data class RankedItem(
-            val item: MediaItemEntity,
-            val exactPhrase: Boolean,
-            val exactTokenCount: Int,
-            val fuzzyDistance: Int,
-            val dateMillis: Long
-        )
-
-        return corpus.asSequence()
-            .mapNotNull { item ->
-                val searchable = normalizeOcrText(item.ocrText.orEmpty())
-                if (searchable.isBlank()) return@mapNotNull null
-                val corpusTokens = searchable.split(' ').filter(String::isNotBlank).distinct()
-
-                var exactCount = 0
-                var totalDistance = 0
-                for (queryToken in queryTokens) {
-                    if (searchable.contains(queryToken)) {
-                        exactCount++
-                        continue
-                    }
-
-                    val maxDistance = fuzzyTolerance(queryToken)
-                    if (maxDistance == 0) return@mapNotNull null
-                    val bestDistance = corpusTokens.asSequence()
-                        .filter { abs(it.length - queryToken.length) <= maxDistance }
-                        .map { boundedLevenshtein(queryToken, it, maxDistance) }
-                        .filter { it <= maxDistance }
-                        .minOrNull()
-                        ?: return@mapNotNull null
-                    totalDistance += bestDistance
-                }
-
-                RankedItem(
-                    item = item,
-                    exactPhrase = searchable.contains(normalizedQuery),
-                    exactTokenCount = exactCount,
-                    fuzzyDistance = totalDistance,
-                    dateMillis = item.dateTakenMillis ?: item.dateAddedSeconds * 1000
-                )
-            }
-            .sortedWith(
-                compareByDescending<RankedItem> { it.exactPhrase }
-                    .thenByDescending { it.exactTokenCount }
-                    .thenBy { it.fuzzyDistance }
-                    .thenByDescending { it.dateMillis }
-            )
-            .take(200)
-            .map { it.item }
-            .toList()
-    }
-
-    private fun fuzzyTolerance(token: String): Int = when {
-        token.any(Char::isDigit) -> 0
-        token.length < 4 -> 0
-        token.length <= 6 -> 1
-        else -> 2
-    }
-
-    private fun boundedLevenshtein(left: String, right: String, maxDistance: Int): Int {
-        if (left == right) return 0
-        if (abs(left.length - right.length) > maxDistance) return maxDistance + 1
-        if (left.isEmpty()) return right.length
-        if (right.isEmpty()) return left.length
-
-        var previous = IntArray(right.length + 1) { it }
-        var current = IntArray(right.length + 1)
-
-        for (i in 1..left.length) {
-            current[0] = i
-            var rowMinimum = current[0]
-            for (j in 1..right.length) {
-                val substitutionCost = if (left[i - 1] == right[j - 1]) 0 else 1
-                current[j] = min(
-                    min(current[j - 1] + 1, previous[j] + 1),
-                    previous[j - 1] + substitutionCost
-                )
-                rowMinimum = min(rowMinimum, current[j])
-            }
-            if (rowMinimum > maxDistance) return maxDistance + 1
-            val swap = previous
-            previous = current
-            current = swap
-        }
-        return previous[right.length]
-    }
-
     override fun onCleared() {
         stopMediaMonitoring()
+        semanticEngine.close()
         super.onCleared()
     }
 }
