@@ -36,6 +36,16 @@ jobs:
           chmod 600 "$KEYSTORE_PATH"
           echo "PICBRAIN_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
 
+      - name: Resolve app version
+        shell: bash
+        run: |
+          VERSION_NAME="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n1)"
+          if [ -z "$VERSION_NAME" ]; then
+            echo "::error::Unable to resolve versionName from app/build.gradle.kts"
+            exit 1
+          fi
+          echo "PICBRAIN_VERSION=$VERSION_NAME" >> "$GITHUB_ENV"
+
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -71,7 +81,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: PicBrain-v0.0.9-stable-signed
+          name: PicBrain-v${{ env.PICBRAIN_VERSION }}-stable-signed
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 90
