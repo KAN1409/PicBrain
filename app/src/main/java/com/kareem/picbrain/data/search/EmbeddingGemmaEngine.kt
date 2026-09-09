@@ -87,15 +87,10 @@ class SemanticModelStore(private val context: Context) {
     }
 
     private fun installValidatedTemp(temp: File): Long {
-        check(temp.length() > MIN_MODEL_BYTES) {
-            "Model file is unexpectedly small"
-        }
-
+        check(temp.length() > MIN_MODEL_BYTES) { "Model file is unexpectedly small" }
         validateModelFile(temp)
 
-        if (modelFile.exists() && !modelFile.delete()) {
-            error("Unable to replace existing semantic model")
-        }
+        if (modelFile.exists() && !modelFile.delete()) error("Unable to replace existing semantic model")
         check(temp.renameTo(modelFile) || runCatching {
             temp.copyTo(modelFile, overwrite = true)
             temp.delete()
@@ -108,10 +103,7 @@ class SemanticModelStore(private val context: Context) {
     private fun validateModelFile(file: File) {
         val embedder = runCatching { TextEmbedder.createFromFile(context, file.absolutePath) }
             .getOrElse { cause ->
-                throw IllegalArgumentException(
-                    "This is not a compatible EmbeddingGemma MediaPipe task model",
-                    cause
-                )
+                throw IllegalArgumentException("This is not a compatible EmbeddingGemma MediaPipe task model", cause)
             }
 
         try {
@@ -120,20 +112,12 @@ class SemanticModelStore(private val context: Context) {
                 .setRole(TextEmbedder.TextRole.QUERY)
                 .build()
             val dimensions = embedder.embed("PicBrain model validation", formatContext)
-                .embeddingResult()
-                .embeddings()
-                .firstOrNull()
-                ?.floatEmbedding()
-                ?.size
-                ?: 0
+                .embeddingResult().embeddings().firstOrNull()?.floatEmbedding()?.size ?: 0
             check(dimensions >= EmbeddingGemmaEmbedder.TARGET_DIMENSIONS) {
                 "Model output has $dimensions dimensions; PicBrain requires at least ${EmbeddingGemmaEmbedder.TARGET_DIMENSIONS}"
             }
         } catch (error: Throwable) {
-            throw IllegalArgumentException(
-                "The model could not produce EmbeddingGemma retrieval embeddings",
-                error
-            )
+            throw IllegalArgumentException("The model could not produce EmbeddingGemma retrieval embeddings", error)
         } finally {
             embedder.close()
         }
@@ -156,38 +140,27 @@ class EmbeddingGemmaEmbedder(
     private var embedder: TextEmbedder? = null
 
     fun isAvailable(): Boolean = modelStore.isInstalled()
-
     suspend fun embedQuery(text: String): FloatArray = embed(text, queryContext())
-
     suspend fun embedDocument(text: String): FloatArray = embed(text, documentContext())
 
-    private suspend fun embed(
-        text: String,
-        formatContext: TextEmbedder.TextFormatContext
-    ): FloatArray = withContext(Dispatchers.Default) {
-        mutex.withLock {
-            require(text.isNotBlank()) { "Cannot embed blank text" }
-            val task = getOrCreateEmbedder()
-            val full = task.embed(text, formatContext)
-                .embeddingResult()
-                .embeddings()
-                .firstOrNull()
-                ?.floatEmbedding()
-                ?: error("EmbeddingGemma returned no float embedding")
-
-            require(full.size >= dimensions) {
-                "Embedding dimension ${full.size} is smaller than requested $dimensions"
+    private suspend fun embed(text: String, formatContext: TextEmbedder.TextFormatContext): FloatArray =
+        withContext(Dispatchers.Default) {
+            mutex.withLock {
+                require(text.isNotBlank()) { "Cannot embed blank text" }
+                val full = getOrCreateEmbedder().embed(text, formatContext)
+                    .embeddingResult().embeddings().firstOrNull()?.floatEmbedding()
+                    ?: error("EmbeddingGemma returned no float embedding")
+                require(full.size >= dimensions) {
+                    "Embedding dimension ${full.size} is smaller than requested $dimensions"
+                }
+                normalize(full.copyOf(dimensions))
             }
-            normalize(full.copyOf(dimensions))
         }
-    }
 
     private fun getOrCreateEmbedder(): TextEmbedder {
         embedder?.let { return it }
         check(modelStore.isInstalled()) { "Semantic model is not installed" }
-        return TextEmbedder.createFromFile(appContext, modelStore.modelFile.absolutePath).also {
-            embedder = it
-        }
+        return TextEmbedder.createFromFile(appContext, modelStore.modelFile.absolutePath).also { embedder = it }
     }
 
     private fun queryContext(): TextEmbedder.TextFormatContext =
@@ -229,7 +202,7 @@ class EmbeddingGemmaSemanticEngine(
 ) : SemanticSearchEngine, AutoCloseable {
     private val embedder = EmbeddingGemmaEmbedder(context.applicationContext)
 
-    override suspend fun search(query: String, limit: Int): List<Long> {
+    override suspend fun search(query: String, limit: Int): List<SemanticHit> {
         if (!embedder.isAvailable() || query.isBlank()) return emptyList()
 
         return runCatching {
@@ -241,13 +214,12 @@ class EmbeddingGemmaSemanticEngine(
                 .mapNotNull { entity ->
                     val vector = decodeVector(entity.vector, entity.dimensions)
                     if (vector.size != queryVector.size) return@mapNotNull null
-                    entity.mediaId to dot(queryVector, vector)
+                    SemanticHit(entity.mediaId, dot(queryVector, vector))
                 }
-                .groupBy({ it.first }, { it.second })
-                .map { (mediaId, scores) -> mediaId to (scores.maxOrNull() ?: -1f) }
-                .sortedByDescending { it.second }
+                .groupBy(SemanticHit::mediaId)
+                .map { (mediaId, hits) -> SemanticHit(mediaId, hits.maxOf(SemanticHit::score)) }
+                .sortedByDescending(SemanticHit::score)
                 .take(limit)
-                .map { it.first }
         }.getOrDefault(emptyList())
     }
 
