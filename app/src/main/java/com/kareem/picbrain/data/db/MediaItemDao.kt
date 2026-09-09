@@ -2,7 +2,9 @@ package com.kareem.picbrain.data.db
 
 import androidx.room.Dao
 import androidx.room.Query
+import androidx.room.RawQuery
 import androidx.room.Upsert
+import androidx.sqlite.db.SupportSQLiteQuery
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -10,8 +12,20 @@ interface MediaItemDao {
     @Upsert
     suspend fun upsertAll(items: List<MediaItemEntity>)
 
+    @Upsert
+    suspend fun upsertEmbeddings(items: List<EmbeddingEntity>)
+
     @Query("SELECT * FROM media_items")
     suspend fun getAll(): List<MediaItemEntity>
+
+    @Query("SELECT * FROM media_embeddings WHERE modelId=:modelId AND dimensions=:dimensions ORDER BY mediaId, chunkIndex")
+    suspend fun getEmbeddings(modelId: String, dimensions: Int): List<EmbeddingEntity>
+
+    @Query("DELETE FROM media_embeddings WHERE modelId=:modelId AND dimensions=:dimensions")
+    suspend fun deleteEmbeddings(modelId: String, dimensions: Int)
+
+    @RawQuery
+    suspend fun searchMediaIds(query: SupportSQLiteQuery): List<Long>
 
     @Query("SELECT * FROM media_items ORDER BY COALESCE(dateTakenMillis, dateAddedSeconds * 1000) DESC LIMIT :limit")
     fun observeRecent(limit: Int = 200): Flow<List<MediaItemEntity>>
