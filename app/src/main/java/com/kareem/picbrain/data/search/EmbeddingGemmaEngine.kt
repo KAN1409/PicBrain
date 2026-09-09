@@ -10,6 +10,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
@@ -20,6 +22,50 @@ class SemanticModelStore(private val context: Context) {
         get() = File(File(context.filesDir, "models"), MODEL_FILE_NAME)
 
     fun isInstalled(): Boolean = modelFile.isFile && modelFile.length() > MIN_MODEL_BYTES
+
+    suspend fun downloadOfficial(onProgress: (Int) -> Unit = {}): Long = withContext(Dispatchers.IO) {
+        val parent = modelFile.parentFile ?: error("Model directory unavailable")
+        check(parent.exists() || parent.mkdirs()) { "Unable to create model directory" }
+
+        val temp = File(parent, "$MODEL_FILE_NAME.download")
+        if (temp.exists()) temp.delete()
+
+        try {
+            val connection = (URL(OFFICIAL_MODEL_URL).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 30_000
+                readTimeout = 60_000
+                instanceFollowRedirects = true
+                requestMethod = "GET"
+            }
+            connection.connect()
+            check(connection.responseCode in 200..299) {
+                "Model download failed with HTTP ${connection.responseCode}"
+            }
+
+            val expectedBytes = connection.contentLengthLong
+            var copied = 0L
+            connection.inputStream.buffered().use { input ->
+                temp.outputStream().buffered().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE * 8)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        output.write(buffer, 0, read)
+                        copied += read
+                        if (expectedBytes > 0L) {
+                            onProgress(((copied * 100L) / expectedBytes).toInt().coerceIn(0, 100))
+                        }
+                    }
+                }
+            }
+            connection.disconnect()
+
+            installValidatedTemp(temp)
+        } catch (error: Throwable) {
+            temp.delete()
+            throw error
+        }
+    }
 
     suspend fun importFrom(uri: Uri): Long = withContext(Dispatchers.IO) {
         val parent = modelFile.parentFile ?: error("Model directory unavailable")
@@ -33,33 +79,37 @@ class SemanticModelStore(private val context: Context) {
                 temp.outputStream().use { output -> input.copyTo(output) }
             } ?: error("Unable to read selected model")
 
-            check(temp.length() > MIN_MODEL_BYTES) {
-                "Selected file is too small to be an EmbeddingGemma task model"
-            }
-
-            validateModelFile(temp)
-
-            if (modelFile.exists() && !modelFile.delete()) {
-                error("Unable to replace existing semantic model")
-            }
-            check(temp.renameTo(modelFile) || runCatching {
-                temp.copyTo(modelFile, overwrite = true)
-                temp.delete()
-                true
-            }.getOrDefault(false)) { "Unable to install semantic model" }
-
-            modelFile.length()
+            installValidatedTemp(temp)
         } catch (error: Throwable) {
             temp.delete()
             throw error
         }
     }
 
+    private fun installValidatedTemp(temp: File): Long {
+        check(temp.length() > MIN_MODEL_BYTES) {
+            "Model file is unexpectedly small"
+        }
+
+        validateModelFile(temp)
+
+        if (modelFile.exists() && !modelFile.delete()) {
+            error("Unable to replace existing semantic model")
+        }
+        check(temp.renameTo(modelFile) || runCatching {
+            temp.copyTo(modelFile, overwrite = true)
+            temp.delete()
+            true
+        }.getOrDefault(false)) { "Unable to install semantic model" }
+
+        return modelFile.length()
+    }
+
     private fun validateModelFile(file: File) {
         val embedder = runCatching { TextEmbedder.createFromFile(context, file.absolutePath) }
             .getOrElse { cause ->
                 throw IllegalArgumentException(
-                    "This is not a MediaPipe-compatible EmbeddingGemma text-embedding model",
+                    "This is not a compatible EmbeddingGemma MediaPipe task model",
                     cause
                 )
             }
@@ -81,7 +131,7 @@ class SemanticModelStore(private val context: Context) {
             }
         } catch (error: Throwable) {
             throw IllegalArgumentException(
-                "The selected model could not produce EmbeddingGemma retrieval embeddings",
+                "The model could not produce EmbeddingGemma retrieval embeddings",
                 error
             )
         } finally {
@@ -91,16 +141,18 @@ class SemanticModelStore(private val context: Context) {
 
     companion object {
         const val MODEL_FILE_NAME = "embedding_gemma.task"
+        const val OFFICIAL_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/text_embedder/embedding_gemma/int4int8/latest/embedding_gemma.task"
         private const val MIN_MODEL_BYTES = 50L * 1024L * 1024L
     }
 }
 
 class EmbeddingGemmaEmbedder(
-    private val context: Context,
+    context: Context,
     private val dimensions: Int = TARGET_DIMENSIONS
 ) : AutoCloseable {
+    private val appContext = context.applicationContext
     private val mutex = Mutex()
-    private val modelStore = SemanticModelStore(context)
+    private val modelStore = SemanticModelStore(appContext)
     private var embedder: TextEmbedder? = null
 
     fun isAvailable(): Boolean = modelStore.isInstalled()
@@ -133,7 +185,7 @@ class EmbeddingGemmaEmbedder(
     private fun getOrCreateEmbedder(): TextEmbedder {
         embedder?.let { return it }
         check(modelStore.isInstalled()) { "Semantic model is not installed" }
-        return TextEmbedder.createFromFile(context, modelStore.modelFile.absolutePath).also {
+        return TextEmbedder.createFromFile(appContext, modelStore.modelFile.absolutePath).also {
             embedder = it
         }
     }
@@ -157,7 +209,7 @@ class EmbeddingGemmaEmbedder(
     }
 
     companion object {
-        const val MODEL_ID = "embeddinggemma-300m-mediapipe-retrieval-v1"
+        const val MODEL_ID = "embeddinggemma-300m-mediapipe-int4int8-v1"
         const val TARGET_DIMENSIONS = 256
 
         private fun normalize(vector: FloatArray): FloatArray {
