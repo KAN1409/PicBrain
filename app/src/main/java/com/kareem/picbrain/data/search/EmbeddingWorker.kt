@@ -2,9 +2,6 @@ package com.kareem.picbrain.data.search
 
 import android.content.Context
 import androidx.work.CoroutineWorker
-import androidx.work.ExistingWorkPolicy
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.kareem.picbrain.PicBrainApp
@@ -18,11 +15,7 @@ class EmbeddingWorker(
 
     override suspend fun doWork(): Result {
         val store = SemanticModelStore(applicationContext)
-        if (!store.isInstalled()) {
-            return Result.failure(
-                workDataOf(KEY_LAST_ERROR to "Semantic model is not installed")
-            )
-        }
+        if (!store.isInstalled()) return Result.success(workDataOf(KEY_INDEXED to 0))
 
         val app = applicationContext as PicBrainApp
         val dao = app.database.mediaItemDao()
@@ -36,55 +29,30 @@ class EmbeddingWorker(
             )
 
             if (screenshots.isEmpty()) {
-                return Result.success(
-                    workDataOf(
-                        KEY_COMPLETE to true,
-                        KEY_INDEXED to 0,
-                        KEY_FAILED to 0,
-                        KEY_BATCH_TOTAL to 0
-                    )
-                )
+                return Result.success(workDataOf(KEY_COMPLETE to true, KEY_INDEXED to 0))
             }
 
             var indexed = 0
             var failed = 0
             var lastError = ""
 
-            setProgress(
-                workDataOf(
-                    KEY_INDEXED to 0,
-                    KEY_FAILED to 0,
-                    KEY_BATCH_TOTAL to screenshots.size,
-                    KEY_CURRENT_ITEM to 0
-                )
-            )
-
-            screenshots.forEachIndexed { index, item ->
+            for (item in screenshots) {
                 coroutineContext.ensureActive()
-                val source = item.ocrNormalizedText.orEmpty().trim()
-                if (source.isBlank()) return@forEachIndexed
+                val source = sanitizeForEmbedding(item.ocrNormalizedText.orEmpty())
+                if (source.isBlank()) continue
 
                 runCatching {
-                    val boundedSource = source.take(MAX_DOCUMENT_CHARS)
-                    val vector = embedder.embedDocument(boundedSource)
+                    val vector = embedder.embedDocument(source)
                     dao.deleteEmbeddingsForMedia(
                         item.mediaId,
                         EmbeddingGemmaEmbedder.MODEL_ID,
                         EmbeddingGemmaEmbedder.TARGET_DIMENSIONS
                     )
-                    dao.upsertEmbeddings(
-                        listOf(createEmbeddingEntity(item.mediaId, boundedSource, vector))
-                    )
+                    dao.upsertEmbeddings(listOf(createEmbeddingEntity(item.mediaId, source, vector)))
                     indexed++
-                }.onFailure { error ->
+                }.onFailure {
                     failed++
-                    lastError = buildString {
-                        append(error::class.java.simpleName)
-                        error.message?.takeIf(String::isNotBlank)?.let {
-                            append(": ")
-                            append(it.take(240))
-                        }
-                    }
+                    lastError = "${it::class.java.simpleName}: ${it.message.orEmpty()}".take(MAX_ERROR_CHARS)
                 }
 
                 setProgress(
@@ -92,19 +60,7 @@ class EmbeddingWorker(
                         KEY_INDEXED to indexed,
                         KEY_FAILED to failed,
                         KEY_BATCH_TOTAL to screenshots.size,
-                        KEY_CURRENT_ITEM to index + 1,
                         KEY_LAST_ERROR to lastError
-                    )
-                )
-            }
-
-            if (indexed == 0 && failed > 0) {
-                return Result.failure(
-                    workDataOf(
-                        KEY_INDEXED to indexed,
-                        KEY_FAILED to failed,
-                        KEY_BATCH_TOTAL to screenshots.size,
-                        KEY_LAST_ERROR to lastError.ifBlank { "Embedding batch failed" }
                     )
                 )
             }
@@ -115,39 +71,40 @@ class EmbeddingWorker(
                 1
             ).isNotEmpty()
 
-            if (hasMore) {
-                val next = OneTimeWorkRequestBuilder<EmbeddingWorker>().build()
-                WorkManager.getInstance(applicationContext).enqueueUniqueWork(
-                    UNIQUE_WORK_NAME,
-                    ExistingWorkPolicy.APPEND_OR_REPLACE,
-                    next
+            when {
+                indexed == 0 && failed > 0 -> Result.failure(
+                    workDataOf(KEY_INDEXED to indexed, KEY_FAILED to failed, KEY_LAST_ERROR to lastError)
+                )
+                hasMore -> Result.success(
+                    workDataOf(KEY_INDEXED to indexed, KEY_FAILED to failed, KEY_CONTINUE to true, KEY_LAST_ERROR to lastError)
+                )
+                else -> Result.success(
+                    workDataOf(KEY_COMPLETE to true, KEY_INDEXED to indexed, KEY_FAILED to failed, KEY_LAST_ERROR to lastError)
                 )
             }
-
-            Result.success(
-                workDataOf(
-                    KEY_COMPLETE to !hasMore,
-                    KEY_INDEXED to indexed,
-                    KEY_FAILED to failed,
-                    KEY_BATCH_TOTAL to screenshots.size,
-                    KEY_LAST_ERROR to lastError
-                )
-            )
         } catch (error: Throwable) {
             Result.failure(
-                workDataOf(
-                    KEY_LAST_ERROR to buildString {
-                        append(error::class.java.simpleName)
-                        error.message?.takeIf(String::isNotBlank)?.let {
-                            append(": ")
-                            append(it.take(240))
-                        }
-                    }
-                )
+                workDataOf(KEY_LAST_ERROR to "${error::class.java.simpleName}: ${error.message.orEmpty()}".take(MAX_ERROR_CHARS))
             )
         } finally {
             embedder.close()
         }
+    }
+
+    private fun sanitizeForEmbedding(raw: String): String {
+        if (raw.isBlank()) return ""
+        val cleaned = buildString(minOf(raw.length, MAX_DOCUMENT_CHARS)) {
+            raw.forEach { ch ->
+                if (length >= MAX_DOCUMENT_CHARS) return@forEach
+                when {
+                    ch == '\n' || ch == '\r' || ch == '\t' -> append(' ')
+                    ch.code in 0x20..0x7E -> append(ch)
+                    ch.code >= 0x00A0 && !Character.isSurrogate(ch) && ch != '\uFFFD' -> append(ch)
+                    else -> append(' ')
+                }
+            }
+        }
+        return cleaned.replace(WHITESPACE, " ").trim()
     }
 
     companion object {
@@ -156,11 +113,14 @@ class EmbeddingWorker(
         const val KEY_SKIPPED = "skipped"
         const val KEY_FAILED = "failed"
         const val KEY_BATCH_TOTAL = "batch_total"
-        const val KEY_CURRENT_ITEM = "current_item"
         const val KEY_COMPLETE = "complete"
+        const val KEY_CONTINUE = "continue"
         const val KEY_LAST_ERROR = "last_error"
 
         private const val BATCH_SIZE = 8
-        private const val MAX_DOCUMENT_CHARS = 1800
+        // Conservative bound: OCR text can tokenize far more densely than character count suggests.
+        private const val MAX_DOCUMENT_CHARS = 700
+        private const val MAX_ERROR_CHARS = 1200
+        private val WHITESPACE = Regex("\\s+")
     }
 }
