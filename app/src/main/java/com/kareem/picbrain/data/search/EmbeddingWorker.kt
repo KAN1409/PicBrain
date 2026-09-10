@@ -2,6 +2,9 @@ package com.kareem.picbrain.data.search
 
 import android.content.Context
 import androidx.work.CoroutineWorker
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.kareem.picbrain.PicBrainApp
@@ -17,21 +20,23 @@ class EmbeddingWorker(
         val store = SemanticModelStore(applicationContext)
         if (!store.isInstalled()) return Result.success(workDataOf(KEY_INDEXED to 0))
 
-        val diagnostic = runCatching { SemanticModelDiagnostic(applicationContext).run() }
-            .getOrElse { error ->
+        if (!inputData.getBoolean(KEY_SKIP_DIAGNOSTIC, false)) {
+            val diagnostic = runCatching { SemanticModelDiagnostic(applicationContext).run() }
+                .getOrElse { error ->
+                    return Result.failure(
+                        workDataOf(
+                            KEY_LAST_ERROR to "Diagnostic bootstrap failed: ${describe(error)}".take(MAX_ERROR_CHARS)
+                        )
+                    )
+                }
+
+            if (!diagnostic.documentPathHealthy) {
                 return Result.failure(
                     workDataOf(
-                        KEY_LAST_ERROR to "Diagnostic bootstrap failed: ${describe(error)}".take(MAX_ERROR_CHARS)
+                        KEY_LAST_ERROR to "Semantic diagnostic: ${diagnostic.compact()}".take(MAX_ERROR_CHARS)
                     )
                 )
             }
-
-        if (!diagnostic.documentPathHealthy) {
-            return Result.failure(
-                workDataOf(
-                    KEY_LAST_ERROR to "Semantic diagnostic: ${diagnostic.compact()}".take(MAX_ERROR_CHARS)
-                )
-            )
         }
 
         val app = applicationContext as PicBrainApp
@@ -101,16 +106,19 @@ class EmbeddingWorker(
                         KEY_LAST_ERROR to lastError
                     )
                 )
-                hasMore -> Result.success(
-                    workDataOf(
-                        KEY_CURRENT_ITEM to current,
-                        KEY_BATCH_TOTAL to screenshots.size,
-                        KEY_INDEXED to indexed,
-                        KEY_FAILED to failed,
-                        KEY_CONTINUE to true,
-                        KEY_LAST_ERROR to lastError
+                hasMore -> {
+                    enqueueNextBatch()
+                    Result.success(
+                        workDataOf(
+                            KEY_CURRENT_ITEM to current,
+                            KEY_BATCH_TOTAL to screenshots.size,
+                            KEY_INDEXED to indexed,
+                            KEY_FAILED to failed,
+                            KEY_CONTINUE to true,
+                            KEY_LAST_ERROR to lastError
+                        )
                     )
-                )
+                }
                 else -> Result.success(
                     workDataOf(
                         KEY_CURRENT_ITEM to current,
@@ -129,6 +137,20 @@ class EmbeddingWorker(
         } finally {
             embedder.close()
         }
+    }
+
+    private fun enqueueNextBatch() {
+        val next = OneTimeWorkRequestBuilder<EmbeddingWorker>()
+            .setInputData(workDataOf(KEY_SKIP_DIAGNOSTIC to true))
+            .build()
+
+        WorkManager.getInstance(applicationContext)
+            .beginUniqueWork(
+                UNIQUE_WORK_NAME,
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                next
+            )
+            .enqueue()
     }
 
     private fun sanitizeForEmbedding(raw: String): String {
@@ -163,8 +185,9 @@ class EmbeddingWorker(
         const val KEY_COMPLETE = "complete"
         const val KEY_CONTINUE = "continue"
         const val KEY_LAST_ERROR = "last_error"
+        const val KEY_SKIP_DIAGNOSTIC = "skip_diagnostic"
 
-        private const val BATCH_SIZE = 8
+        private const val BATCH_SIZE = 16
         private const val MAX_DOCUMENT_CHARS = 700
         private const val MAX_ERROR_CHARS = 1200
         private val WHITESPACE = Regex("\\s+")
