@@ -63,6 +63,7 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
     val ocrPendingCount by vm.ocrPendingCount.collectAsStateWithLifecycle()
     val ocrFailedCount by vm.ocrFailedCount.collectAsStateWithLifecycle()
     val semanticIndexedCount by vm.semanticIndexedCount.collectAsStateWithLifecycle()
+    val semanticFailedCount by vm.semanticFailedCount.collectAsStateWithLifecycle()
     val recentMedia by vm.recentMedia.collectAsStateWithLifecycle()
     val recentScreenshots by vm.recentScreenshots.collectAsStateWithLifecycle()
     val searchResults by vm.searchResults.collectAsStateWithLifecycle()
@@ -223,7 +224,7 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
                 modifier = Modifier.fillMaxWidth()
             )
             Text(
-                "Semantic indexed: $semanticIndexedCount / $ocrDoneCount",
+                "Semantic indexed: $semanticIndexedCount / $ocrDoneCount • permanently failed: $semanticFailedCount",
                 style = MaterialTheme.typography.bodySmall
             )
             Text(
