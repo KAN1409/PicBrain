@@ -54,6 +54,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         EmbeddingGemmaEmbedder.MODEL_ID,
         EmbeddingGemmaEmbedder.TARGET_DIMENSIONS
     ).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+    val semanticFailedCount = dao.observeSemanticFailedCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val recentMedia = dao.observeRecent().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val recentScreenshots = dao.observeRecentScreenshots().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val semanticDiagnostics = searchRepository.semanticDiagnostics
@@ -197,12 +199,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         semanticBatchFailed = 0
         semanticLastError = null
         status = "Restarting semantic indexing…"
-        val request = OneTimeWorkRequestBuilder<EmbeddingWorker>().build()
-        workManager.enqueueUniqueWork(
-            EmbeddingWorker.UNIQUE_WORK_NAME,
-            ExistingWorkPolicy.REPLACE,
-            request
-        )
+        viewModelScope.launch {
+            dao.resetSemanticFailures()
+            val request = OneTimeWorkRequestBuilder<EmbeddingWorker>().build()
+            workManager.enqueueUniqueWork(
+                EmbeddingWorker.UNIQUE_WORK_NAME,
+                ExistingWorkPolicy.REPLACE,
+                request
+            )
+        }
     }
 
     fun downloadSemanticModel() {
