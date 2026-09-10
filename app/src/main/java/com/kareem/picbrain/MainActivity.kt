@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -96,7 +98,10 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(20.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text("PicBrain", style = MaterialTheme.typography.headlineLarge)
@@ -242,7 +247,7 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
         Text(vm.status, style = MaterialTheme.typography.bodySmall)
         Text(
             if (vm.semanticModelInstalled)
-                "Semantic retrieval runs fully on-device. Index batches continue immediately and worker state is shown live."
+                "Semantic retrieval runs fully on-device. Index batches continue automatically and worker state is shown live."
             else
                 "Lexical and fuzzy retrieval remain active until the semantic model is installed.",
             style = MaterialTheme.typography.bodySmall
@@ -267,11 +272,11 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
         }
 
         when (filter) {
-            LibraryFilter.ALL -> MediaGrid(recentMedia, modifier = Modifier.weight(1f))
-            LibraryFilter.SCREENSHOTS -> MediaGrid(recentScreenshots, modifier = Modifier.weight(1f))
+            LibraryFilter.ALL -> MediaGrid(recentMedia, modifier = Modifier.height(560.dp))
+            LibraryFilter.SCREENSHOTS -> MediaGrid(recentScreenshots, modifier = Modifier.height(560.dp))
             LibraryFilter.SEARCH -> MediaGrid(
                 items = searchResults,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.height(560.dp),
                 semanticScores = semanticScores
             )
         }
