@@ -23,19 +23,10 @@ class EmbeddingWorker(
         if (!inputData.getBoolean(KEY_SKIP_DIAGNOSTIC, false)) {
             val diagnostic = runCatching { SemanticModelDiagnostic(applicationContext).run() }
                 .getOrElse { error ->
-                    return Result.failure(
-                        workDataOf(
-                            KEY_LAST_ERROR to "Diagnostic bootstrap failed: ${describe(error)}".take(MAX_ERROR_CHARS)
-                        )
-                    )
+                    return Result.failure(workDataOf(KEY_LAST_ERROR to "Diagnostic bootstrap failed: ${describe(error)}".take(MAX_ERROR_CHARS)))
                 }
-
             if (!diagnostic.documentPathHealthy) {
-                return Result.failure(
-                    workDataOf(
-                        KEY_LAST_ERROR to "Semantic diagnostic: ${diagnostic.compact()}".take(MAX_ERROR_CHARS)
-                    )
-                )
+                return Result.failure(workDataOf(KEY_LAST_ERROR to "Semantic diagnostic: ${diagnostic.compact()}".take(MAX_ERROR_CHARS)))
             }
         }
 
@@ -49,13 +40,11 @@ class EmbeddingWorker(
                 EmbeddingGemmaEmbedder.TARGET_DIMENSIONS,
                 BATCH_SIZE
             )
-
-            if (screenshots.isEmpty()) {
-                return Result.success(workDataOf(KEY_COMPLETE to true, KEY_INDEXED to 0))
-            }
+            if (screenshots.isEmpty()) return Result.success(workDataOf(KEY_COMPLETE to true, KEY_INDEXED to 0))
 
             var indexed = 0
             var failed = 0
+            var skipped = 0
             var lastError = ""
             var current = 0
 
@@ -63,31 +52,33 @@ class EmbeddingWorker(
                 coroutineContext.ensureActive()
                 current++
                 val source = sanitizeForEmbedding(item.ocrNormalizedText.orEmpty())
-                if (source.isBlank()) continue
+                if (source.isBlank()) {
+                    skipped++
+                    continue
+                }
 
-                runCatching {
-                    val vector = embedder.embedDocument(source)
+                val result = embedWithAdaptiveLength(embedder, source)
+                result.onSuccess { embedded ->
                     dao.deleteEmbeddingsForMedia(
                         item.mediaId,
                         EmbeddingGemmaEmbedder.MODEL_ID,
                         EmbeddingGemmaEmbedder.TARGET_DIMENSIONS
                     )
-                    dao.upsertEmbeddings(listOf(createEmbeddingEntity(item.mediaId, source, vector)))
+                    dao.upsertEmbeddings(listOf(createEmbeddingEntity(item.mediaId, embedded.text, embedded.vector)))
                     indexed++
                 }.onFailure {
                     failed++
                     lastError = describe(it).take(MAX_ERROR_CHARS)
                 }
 
-                setProgress(
-                    workDataOf(
-                        KEY_CURRENT_ITEM to current,
-                        KEY_INDEXED to indexed,
-                        KEY_FAILED to failed,
-                        KEY_BATCH_TOTAL to screenshots.size,
-                        KEY_LAST_ERROR to lastError
-                    )
-                )
+                setProgress(workDataOf(
+                    KEY_CURRENT_ITEM to current,
+                    KEY_INDEXED to indexed,
+                    KEY_SKIPPED to skipped,
+                    KEY_FAILED to failed,
+                    KEY_BATCH_TOTAL to screenshots.size,
+                    KEY_LAST_ERROR to lastError
+                ))
             }
 
             val hasMore = dao.getScreenshotsNeedingEmbedding(
@@ -96,60 +87,79 @@ class EmbeddingWorker(
                 1
             ).isNotEmpty()
 
+            // Never let one poison/oversized item kill the whole indexing session.
+            // Continue if this batch made any forward progress; otherwise fail visibly to avoid an infinite loop.
             when {
-                indexed == 0 && failed > 0 -> Result.failure(
-                    workDataOf(
-                        KEY_CURRENT_ITEM to current,
-                        KEY_BATCH_TOTAL to screenshots.size,
-                        KEY_INDEXED to indexed,
-                        KEY_FAILED to failed,
-                        KEY_LAST_ERROR to lastError
-                    )
-                )
-                hasMore -> {
+                hasMore && (indexed > 0 || skipped > 0) -> {
                     enqueueNextBatch()
-                    Result.success(
-                        workDataOf(
-                            KEY_CURRENT_ITEM to current,
-                            KEY_BATCH_TOTAL to screenshots.size,
-                            KEY_INDEXED to indexed,
-                            KEY_FAILED to failed,
-                            KEY_CONTINUE to true,
-                            KEY_LAST_ERROR to lastError
-                        )
-                    )
-                }
-                else -> Result.success(
-                    workDataOf(
+                    Result.success(workDataOf(
                         KEY_CURRENT_ITEM to current,
                         KEY_BATCH_TOTAL to screenshots.size,
-                        KEY_COMPLETE to true,
                         KEY_INDEXED to indexed,
+                        KEY_SKIPPED to skipped,
                         KEY_FAILED to failed,
+                        KEY_CONTINUE to true,
                         KEY_LAST_ERROR to lastError
-                    )
-                )
+                    ))
+                }
+                hasMore && indexed == 0 -> Result.failure(workDataOf(
+                    KEY_CURRENT_ITEM to current,
+                    KEY_BATCH_TOTAL to screenshots.size,
+                    KEY_INDEXED to indexed,
+                    KEY_SKIPPED to skipped,
+                    KEY_FAILED to failed,
+                    KEY_LAST_ERROR to lastError.ifBlank { "Semantic batch made no forward progress" }
+                ))
+                else -> Result.success(workDataOf(
+                    KEY_CURRENT_ITEM to current,
+                    KEY_BATCH_TOTAL to screenshots.size,
+                    KEY_COMPLETE to true,
+                    KEY_INDEXED to indexed,
+                    KEY_SKIPPED to skipped,
+                    KEY_FAILED to failed,
+                    KEY_LAST_ERROR to lastError
+                ))
             }
         } catch (error: Throwable) {
-            Result.failure(
-                workDataOf(KEY_LAST_ERROR to describe(error).take(MAX_ERROR_CHARS))
-            )
+            Result.failure(workDataOf(KEY_LAST_ERROR to describe(error).take(MAX_ERROR_CHARS)))
         } finally {
             embedder.close()
         }
+    }
+
+    private suspend fun embedWithAdaptiveLength(
+        embedder: EmbeddingGemmaEmbedder,
+        original: String
+    ): Result<EmbeddedDocument> {
+        var candidate = original.take(MAX_DOCUMENT_CHARS)
+        var lastError: Throwable? = null
+        for (limit in ADAPTIVE_CHAR_LIMITS) {
+            candidate = original.take(minOf(original.length, limit)).trim()
+            if (candidate.isBlank()) break
+            try {
+                return Result.success(EmbeddedDocument(candidate, embedder.embedDocument(candidate)))
+            } catch (error: Throwable) {
+                lastError = error
+                if (!isSequenceTooLong(error)) return Result.failure(error)
+            }
+        }
+        return Result.failure(lastError ?: IllegalStateException("No embeddable text after length limiting"))
+    }
+
+    private fun isSequenceTooLong(error: Throwable): Boolean {
+        val message = generateSequence(error) { it.cause }
+            .mapNotNull { it.message }
+            .joinToString(" ")
+            .lowercase()
+        return "max_seq_len" in message || "input text is too long" in message || "token_ids.size" in message
     }
 
     private fun enqueueNextBatch() {
         val next = OneTimeWorkRequestBuilder<EmbeddingWorker>()
             .setInputData(workDataOf(KEY_SKIP_DIAGNOSTIC to true))
             .build()
-
         WorkManager.getInstance(applicationContext)
-            .beginUniqueWork(
-                UNIQUE_WORK_NAME,
-                ExistingWorkPolicy.APPEND_OR_REPLACE,
-                next
-            )
+            .beginUniqueWork(UNIQUE_WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, next)
             .enqueue()
     }
 
@@ -175,6 +185,8 @@ class EmbeddingWorker(
         return "${root::class.java.simpleName}: $message"
     }
 
+    private data class EmbeddedDocument(val text: String, val vector: FloatArray)
+
     companion object {
         const val UNIQUE_WORK_NAME = "picbrain-semantic-embeddings"
         const val KEY_CURRENT_ITEM = "current_item"
@@ -189,6 +201,7 @@ class EmbeddingWorker(
 
         private const val BATCH_SIZE = 16
         private const val MAX_DOCUMENT_CHARS = 700
+        private val ADAPTIVE_CHAR_LIMITS = intArrayOf(700, 560, 440, 320, 240)
         private const val MAX_ERROR_CHARS = 1200
         private val WHITESPACE = Regex("\\s+")
     }
