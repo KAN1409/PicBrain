@@ -88,7 +88,7 @@ class EmbeddingWorker(
             ).isNotEmpty()
 
             when {
-                hasMore && (indexed > 0 || skipped > 0) -> {
+                hasMore && indexed > 0 -> {
                     enqueueNextBatch()
                     Result.success(workDataOf(
                         KEY_CURRENT_ITEM to current,
@@ -129,9 +129,11 @@ class EmbeddingWorker(
         embedder: EmbeddingGemmaEmbedder,
         original: String
     ): kotlin.Result<EmbeddedDocument> {
+        var limit = minOf(original.length, MAX_DOCUMENT_CHARS)
         var lastError: Throwable? = null
-        for (limit in ADAPTIVE_CHAR_LIMITS) {
-            val candidate = original.take(minOf(original.length, limit)).trim()
+
+        while (limit >= MIN_DOCUMENT_CHARS) {
+            val candidate = original.take(limit).trim()
             if (candidate.isBlank()) break
             try {
                 return kotlin.Result.success(
@@ -140,10 +142,25 @@ class EmbeddingWorker(
             } catch (error: Throwable) {
                 lastError = error
                 if (!isSequenceTooLong(error)) return kotlin.Result.failure(error)
+                val next = (limit * 2 / 3).coerceAtLeast(MIN_DOCUMENT_CHARS)
+                if (next == limit) break
+                limit = next
             }
         }
+
+        val finalCandidate = original.take(MIN_DOCUMENT_CHARS).trim()
+        if (finalCandidate.isNotBlank()) {
+            try {
+                return kotlin.Result.success(
+                    EmbeddedDocument(finalCandidate, embedder.embedDocument(finalCandidate))
+                )
+            } catch (error: Throwable) {
+                lastError = error
+            }
+        }
+
         return kotlin.Result.failure(
-            lastError ?: IllegalStateException("No embeddable text after length limiting")
+            lastError ?: IllegalStateException("No embeddable text after adaptive length limiting")
         )
     }
 
@@ -202,7 +219,7 @@ class EmbeddingWorker(
 
         private const val BATCH_SIZE = 16
         private const val MAX_DOCUMENT_CHARS = 700
-        private val ADAPTIVE_CHAR_LIMITS = intArrayOf(700, 560, 440, 320, 240)
+        private const val MIN_DOCUMENT_CHARS = 24
         private const val MAX_ERROR_CHARS = 1200
         private val WHITESPACE = Regex("\\s+")
     }
