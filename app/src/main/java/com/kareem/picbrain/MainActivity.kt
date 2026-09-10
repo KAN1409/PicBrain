@@ -60,6 +60,7 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
     val ocrDoneCount by vm.ocrDoneCount.collectAsStateWithLifecycle()
     val ocrPendingCount by vm.ocrPendingCount.collectAsStateWithLifecycle()
     val ocrFailedCount by vm.ocrFailedCount.collectAsStateWithLifecycle()
+    val semanticIndexedCount by vm.semanticIndexedCount.collectAsStateWithLifecycle()
     val recentMedia by vm.recentMedia.collectAsStateWithLifecycle()
     val recentScreenshots by vm.recentScreenshots.collectAsStateWithLifecycle()
     val searchResults by vm.searchResults.collectAsStateWithLifecycle()
@@ -206,10 +207,21 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
             )
         }
 
+        if (vm.semanticModelInstalled && ocrDoneCount > 0) {
+            LinearProgressIndicator(
+                progress = { (semanticIndexedCount.toFloat() / ocrDoneCount.toFloat()).coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                "Semantic indexed: $semanticIndexedCount / $ocrDoneCount",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
         Text(vm.status, style = MaterialTheme.typography.bodySmall)
         Text(
             if (vm.semanticModelInstalled)
-                "Semantic retrieval runs fully on-device. Weak semantic matches are filtered before ranking."
+                "Semantic retrieval runs fully on-device. Indexing is resumable and long OCR text is bounded for native stability."
             else
                 "Lexical and fuzzy retrieval remain active until the semantic model is installed.",
             style = MaterialTheme.typography.bodySmall
