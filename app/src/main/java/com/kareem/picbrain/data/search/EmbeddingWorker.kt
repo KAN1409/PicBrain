@@ -57,7 +57,7 @@ class EmbeddingWorker(
                     continue
                 }
 
-                val result = embedWithAdaptiveLength(embedder, source)
+                val result: kotlin.Result<EmbeddedDocument> = embedWithAdaptiveLength(embedder, source)
                 result.onSuccess { embedded ->
                     dao.deleteEmbeddingsForMedia(
                         item.mediaId,
@@ -66,9 +66,9 @@ class EmbeddingWorker(
                     )
                     dao.upsertEmbeddings(listOf(createEmbeddingEntity(item.mediaId, embedded.text, embedded.vector)))
                     indexed++
-                }.onFailure {
+                }.onFailure { error ->
                     failed++
-                    lastError = describe(it).take(MAX_ERROR_CHARS)
+                    lastError = describe(error).take(MAX_ERROR_CHARS)
                 }
 
                 setProgress(workDataOf(
@@ -87,8 +87,6 @@ class EmbeddingWorker(
                 1
             ).isNotEmpty()
 
-            // Never let one poison/oversized item kill the whole indexing session.
-            // Continue if this batch made any forward progress; otherwise fail visibly to avoid an infinite loop.
             when {
                 hasMore && (indexed > 0 || skipped > 0) -> {
                     enqueueNextBatch()
@@ -130,20 +128,23 @@ class EmbeddingWorker(
     private suspend fun embedWithAdaptiveLength(
         embedder: EmbeddingGemmaEmbedder,
         original: String
-    ): Result<EmbeddedDocument> {
-        var candidate = original.take(MAX_DOCUMENT_CHARS)
+    ): kotlin.Result<EmbeddedDocument> {
         var lastError: Throwable? = null
         for (limit in ADAPTIVE_CHAR_LIMITS) {
-            candidate = original.take(minOf(original.length, limit)).trim()
+            val candidate = original.take(minOf(original.length, limit)).trim()
             if (candidate.isBlank()) break
             try {
-                return Result.success(EmbeddedDocument(candidate, embedder.embedDocument(candidate)))
+                return kotlin.Result.success(
+                    EmbeddedDocument(candidate, embedder.embedDocument(candidate))
+                )
             } catch (error: Throwable) {
                 lastError = error
-                if (!isSequenceTooLong(error)) return Result.failure(error)
+                if (!isSequenceTooLong(error)) return kotlin.Result.failure(error)
             }
         }
-        return Result.failure(lastError ?: IllegalStateException("No embeddable text after length limiting"))
+        return kotlin.Result.failure(
+            lastError ?: IllegalStateException("No embeddable text after length limiting")
+        )
     }
 
     private fun isSequenceTooLong(error: Throwable): Boolean {
