@@ -9,9 +9,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.Observer
 import androidx.lifecycle.viewModelScope
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.kareem.picbrain.data.media.MediaIndexer
 import com.kareem.picbrain.data.media.MediaStoreObserver
@@ -72,6 +74,60 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var semanticDownloadProgress by mutableIntStateOf(0)
         private set
 
+    var semanticWorkState by mutableStateOf("IDLE")
+        private set
+    var semanticBatchCurrent by mutableIntStateOf(0)
+        private set
+    var semanticBatchTotal by mutableIntStateOf(0)
+        private set
+    var semanticBatchIndexed by mutableIntStateOf(0)
+        private set
+    var semanticBatchFailed by mutableIntStateOf(0)
+        private set
+    var semanticLastError by mutableStateOf<String?>(null)
+        private set
+
+    val isSemanticIndexing: Boolean
+        get() = semanticWorkState == WorkInfo.State.RUNNING.name ||
+            semanticWorkState == WorkInfo.State.ENQUEUED.name ||
+            semanticWorkState == WorkInfo.State.BLOCKED.name
+
+    private val semanticWorkObserver = Observer<List<WorkInfo>> { infos ->
+        val info = infos.lastOrNull { !it.state.isFinished } ?: infos.lastOrNull()
+        if (info == null) {
+            semanticWorkState = "IDLE"
+            return@Observer
+        }
+
+        semanticWorkState = info.state.name
+        val data = if (info.state.isFinished) info.outputData else info.progress
+        semanticBatchCurrent = data.getInt(EmbeddingWorker.KEY_CURRENT_ITEM, semanticBatchCurrent)
+        semanticBatchTotal = data.getInt(EmbeddingWorker.KEY_BATCH_TOTAL, semanticBatchTotal)
+        semanticBatchIndexed = data.getInt(EmbeddingWorker.KEY_INDEXED, semanticBatchIndexed)
+        semanticBatchFailed = data.getInt(EmbeddingWorker.KEY_FAILED, semanticBatchFailed)
+        data.getString(EmbeddingWorker.KEY_LAST_ERROR)
+            ?.takeIf(String::isNotBlank)
+            ?.let { semanticLastError = it }
+
+        status = when (info.state) {
+            WorkInfo.State.ENQUEUED -> "Semantic indexing queued…"
+            WorkInfo.State.RUNNING -> "Semantic indexing running…"
+            WorkInfo.State.BLOCKED -> "Semantic indexing waiting for previous batch…"
+            WorkInfo.State.SUCCEEDED -> if (data.getBoolean(EmbeddingWorker.KEY_COMPLETE, false)) {
+                "Semantic indexing complete"
+            } else {
+                "Semantic batch complete; continuing…"
+            }
+            WorkInfo.State.FAILED -> "Semantic indexing failed"
+            WorkInfo.State.CANCELLED -> "Semantic indexing cancelled"
+        }
+    }
+
+    init {
+        workManager.getWorkInfosForUniqueWorkLiveData(EmbeddingWorker.UNIQUE_WORK_NAME)
+            .observeForever(semanticWorkObserver)
+    }
+
     fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(getApplication(), permission) == PackageManager.PERMISSION_GRANTED
 
@@ -109,10 +165,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun scheduleSemanticIndexing() {
-        if (!semanticModelStore.isInstalled()) return
-        status = "Semantic indexing scheduled…"
+        if (!semanticModelStore.isInstalled()) {
+            status = "Semantic model is not installed"
+            return
+        }
+        if (isSemanticIndexing) {
+            status = "Semantic indexing is already running"
+            return
+        }
+
+        semanticBatchCurrent = 0
+        semanticBatchTotal = 0
+        semanticBatchIndexed = 0
+        semanticBatchFailed = 0
+        semanticLastError = null
+        status = "Starting semantic indexing…"
+
         val request = OneTimeWorkRequestBuilder<EmbeddingWorker>().build()
-        workManager.enqueueUniqueWork(EmbeddingWorker.UNIQUE_WORK_NAME, ExistingWorkPolicy.REPLACE, request)
+        workManager.enqueueUniqueWork(
+            EmbeddingWorker.UNIQUE_WORK_NAME,
+            ExistingWorkPolicy.KEEP,
+            request
+        )
+    }
+
+    fun restartSemanticIndexing() {
+        if (!semanticModelStore.isInstalled()) return
+        semanticBatchCurrent = 0
+        semanticBatchTotal = 0
+        semanticBatchIndexed = 0
+        semanticBatchFailed = 0
+        semanticLastError = null
+        status = "Restarting semantic indexing…"
+        val request = OneTimeWorkRequestBuilder<EmbeddingWorker>().build()
+        workManager.enqueueUniqueWork(
+            EmbeddingWorker.UNIQUE_WORK_NAME,
+            ExistingWorkPolicy.REPLACE,
+            request
+        )
     }
 
     fun downloadSemanticModel() {
@@ -190,6 +280,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        workManager.getWorkInfosForUniqueWorkLiveData(EmbeddingWorker.UNIQUE_WORK_NAME)
+            .removeObserver(semanticWorkObserver)
         stopMediaMonitoring()
         semanticEngine.close()
         super.onCleared()
