@@ -101,7 +101,11 @@ class MediaIndexer(
             ocrState = if (preserveOcr) previous?.ocrState ?: "NOT_PROCESSED" else "NOT_PROCESSED",
             ocrEngine = if (preserveOcr) previous?.ocrEngine else null,
             ocrProcessedAtMillis = if (preserveOcr) previous?.ocrProcessedAtMillis else null,
-            ocrError = if (preserveOcr) previous?.ocrError else null
+            ocrError = if (preserveOcr) previous?.ocrError else null,
+            semanticState = if (preserveOcr) previous?.semanticState ?: "PENDING" else "PENDING",
+            semanticAttemptCount = if (preserveOcr) previous?.semanticAttemptCount ?: 0 else 0,
+            semanticLastError = if (preserveOcr) previous?.semanticLastError else null,
+            semanticLastAttemptAtMillis = if (preserveOcr) previous?.semanticLastAttemptAtMillis else null
         )
     }
 }
