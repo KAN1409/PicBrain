@@ -17,6 +17,23 @@ class EmbeddingWorker(
         val store = SemanticModelStore(applicationContext)
         if (!store.isInstalled()) return Result.success(workDataOf(KEY_INDEXED to 0))
 
+        val diagnostic = runCatching { SemanticModelDiagnostic(applicationContext).run() }
+            .getOrElse { error ->
+                return Result.failure(
+                    workDataOf(
+                        KEY_LAST_ERROR to "Diagnostic bootstrap failed: ${describe(error)}".take(MAX_ERROR_CHARS)
+                    )
+                )
+            }
+
+        if (!diagnostic.documentPathHealthy) {
+            return Result.failure(
+                workDataOf(
+                    KEY_LAST_ERROR to "Semantic diagnostic: ${diagnostic.compact()}".take(MAX_ERROR_CHARS)
+                )
+            )
+        }
+
         val app = applicationContext as PicBrainApp
         val dao = app.database.mediaItemDao()
         val embedder = EmbeddingGemmaEmbedder(applicationContext)
@@ -35,9 +52,11 @@ class EmbeddingWorker(
             var indexed = 0
             var failed = 0
             var lastError = ""
+            var current = 0
 
             for (item in screenshots) {
                 coroutineContext.ensureActive()
+                current++
                 val source = sanitizeForEmbedding(item.ocrNormalizedText.orEmpty())
                 if (source.isBlank()) continue
 
@@ -52,11 +71,12 @@ class EmbeddingWorker(
                     indexed++
                 }.onFailure {
                     failed++
-                    lastError = "${it::class.java.simpleName}: ${it.message.orEmpty()}".take(MAX_ERROR_CHARS)
+                    lastError = describe(it).take(MAX_ERROR_CHARS)
                 }
 
                 setProgress(
                     workDataOf(
+                        KEY_CURRENT_ITEM to current,
                         KEY_INDEXED to indexed,
                         KEY_FAILED to failed,
                         KEY_BATCH_TOTAL to screenshots.size,
@@ -73,18 +93,38 @@ class EmbeddingWorker(
 
             when {
                 indexed == 0 && failed > 0 -> Result.failure(
-                    workDataOf(KEY_INDEXED to indexed, KEY_FAILED to failed, KEY_LAST_ERROR to lastError)
+                    workDataOf(
+                        KEY_CURRENT_ITEM to current,
+                        KEY_BATCH_TOTAL to screenshots.size,
+                        KEY_INDEXED to indexed,
+                        KEY_FAILED to failed,
+                        KEY_LAST_ERROR to lastError
+                    )
                 )
                 hasMore -> Result.success(
-                    workDataOf(KEY_INDEXED to indexed, KEY_FAILED to failed, KEY_CONTINUE to true, KEY_LAST_ERROR to lastError)
+                    workDataOf(
+                        KEY_CURRENT_ITEM to current,
+                        KEY_BATCH_TOTAL to screenshots.size,
+                        KEY_INDEXED to indexed,
+                        KEY_FAILED to failed,
+                        KEY_CONTINUE to true,
+                        KEY_LAST_ERROR to lastError
+                    )
                 )
                 else -> Result.success(
-                    workDataOf(KEY_COMPLETE to true, KEY_INDEXED to indexed, KEY_FAILED to failed, KEY_LAST_ERROR to lastError)
+                    workDataOf(
+                        KEY_CURRENT_ITEM to current,
+                        KEY_BATCH_TOTAL to screenshots.size,
+                        KEY_COMPLETE to true,
+                        KEY_INDEXED to indexed,
+                        KEY_FAILED to failed,
+                        KEY_LAST_ERROR to lastError
+                    )
                 )
             }
         } catch (error: Throwable) {
             Result.failure(
-                workDataOf(KEY_LAST_ERROR to "${error::class.java.simpleName}: ${error.message.orEmpty()}".take(MAX_ERROR_CHARS))
+                workDataOf(KEY_LAST_ERROR to describe(error).take(MAX_ERROR_CHARS))
             )
         } finally {
             embedder.close()
@@ -107,8 +147,15 @@ class EmbeddingWorker(
         return cleaned.replace(WHITESPACE, " ").trim()
     }
 
+    private fun describe(error: Throwable): String {
+        val root = generateSequence(error) { it.cause }.last()
+        val message = root.message?.replace(WHITESPACE, " ")?.trim().orEmpty()
+        return "${root::class.java.simpleName}: $message"
+    }
+
     companion object {
         const val UNIQUE_WORK_NAME = "picbrain-semantic-embeddings"
+        const val KEY_CURRENT_ITEM = "current_item"
         const val KEY_INDEXED = "indexed"
         const val KEY_SKIPPED = "skipped"
         const val KEY_FAILED = "failed"
@@ -118,7 +165,6 @@ class EmbeddingWorker(
         const val KEY_LAST_ERROR = "last_error"
 
         private const val BATCH_SIZE = 8
-        // Conservative bound: OCR text can tokenize far more densely than character count suggests.
         private const val MAX_DOCUMENT_CHARS = 700
         private const val MAX_ERROR_CHARS = 1200
         private val WHITESPACE = Regex("\\s+")
