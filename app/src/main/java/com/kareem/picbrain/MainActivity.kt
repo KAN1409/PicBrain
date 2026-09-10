@@ -161,7 +161,12 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
             }
             Button(onClick = vm::scheduleBackgroundOcr) { Text("Continue OCR") }
             if (vm.semanticModelInstalled) {
-                Button(onClick = vm::scheduleSemanticIndexing) { Text("Semantic index") }
+                Button(
+                    onClick = vm::scheduleSemanticIndexing,
+                    enabled = !vm.isSemanticIndexing
+                ) {
+                    Text(if (vm.isSemanticIndexing) "Indexing…" else "Start semantic index")
+                }
             }
         }
 
@@ -216,12 +221,28 @@ private fun PicBrainHome(vm: MainViewModel = viewModel()) {
                 "Semantic indexed: $semanticIndexedCount / $ocrDoneCount",
                 style = MaterialTheme.typography.bodySmall
             )
+            Text(
+                "Worker: ${vm.semanticWorkState} • batch: ${vm.semanticBatchCurrent}/${vm.semanticBatchTotal} • " +
+                    "indexed: ${vm.semanticBatchIndexed} • failed: ${vm.semanticBatchFailed}",
+                style = MaterialTheme.typography.bodySmall
+            )
+            vm.semanticLastError?.let { error ->
+                Text(
+                    "Last semantic error: $error",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (vm.semanticWorkState == "FAILED" || vm.semanticWorkState == "CANCELLED") {
+                OutlinedButton(onClick = vm::restartSemanticIndexing) {
+                    Text("Restart semantic indexing")
+                }
+            }
         }
 
         Text(vm.status, style = MaterialTheme.typography.bodySmall)
         Text(
             if (vm.semanticModelInstalled)
-                "Semantic retrieval runs fully on-device. Indexing is resumable and long OCR text is bounded for native stability."
+                "Semantic retrieval runs fully on-device. Index batches continue immediately and worker state is shown live."
             else
                 "Lexical and fuzzy retrieval remain active until the semantic model is installed.",
             style = MaterialTheme.typography.bodySmall
