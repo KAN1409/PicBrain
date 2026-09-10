@@ -147,13 +147,21 @@ class EmbeddingGemmaEmbedder(
         withContext(Dispatchers.Default) {
             mutex.withLock {
                 require(text.isNotBlank()) { "Cannot embed blank text" }
-                val full = getOrCreateEmbedder().embed(text, formatContext)
-                    .embeddingResult().embeddings().firstOrNull()?.floatEmbedding()
-                    ?: error("EmbeddingGemma returned no float embedding")
-                require(full.size >= dimensions) {
-                    "Embedding dimension ${full.size} is smaller than requested $dimensions"
+                try {
+                    val full = getOrCreateEmbedder().embed(text, formatContext)
+                        .embeddingResult().embeddings().firstOrNull()?.floatEmbedding()
+                        ?: error("EmbeddingGemma returned no float embedding")
+                    require(full.size >= dimensions) {
+                        "Embedding dimension ${full.size} is smaller than requested $dimensions"
+                    }
+                    normalize(full.copyOf(dimensions))
+                } catch (error: Throwable) {
+                    // A MediaPipe CalculatorGraph RET_CHECK can leave the native graph unusable.
+                    // Dispose it immediately so the next retry starts with a fresh graph.
+                    runCatching { embedder?.close() }
+                    embedder = null
+                    throw error
                 }
-                normalize(full.copyOf(dimensions))
             }
         }
 
