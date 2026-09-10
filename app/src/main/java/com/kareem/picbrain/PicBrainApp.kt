@@ -9,7 +9,7 @@ import com.kareem.picbrain.data.db.PicBrainDatabase
 class PicBrainApp : Application() {
     val database by lazy {
         Room.databaseBuilder(this, PicBrainDatabase::class.java, "picbrain.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
             .build()
     }
 
@@ -85,6 +85,27 @@ class PicBrainApp : Application() {
                     BEGIN
                         DELETE FROM media_fts WHERE mediaId = OLD.mediaId;
                         DELETE FROM media_embeddings WHERE mediaId = OLD.mediaId;
+                    END
+                    """.trimIndent()
+                )
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE media_items ADD COLUMN semanticState TEXT NOT NULL DEFAULT 'PENDING'")
+                db.execSQL("ALTER TABLE media_items ADD COLUMN semanticAttemptCount INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE media_items ADD COLUMN semanticLastError TEXT")
+                db.execSQL("ALTER TABLE media_items ADD COLUMN semanticLastAttemptAtMillis INTEGER")
+                db.execSQL(
+                    """
+                    UPDATE media_items
+                    SET semanticState = CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM media_embeddings e
+                            WHERE e.mediaId = media_items.mediaId
+                        ) THEN 'DONE'
+                        ELSE 'PENDING'
                     END
                     """.trimIndent()
                 )
