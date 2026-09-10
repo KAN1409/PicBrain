@@ -16,6 +16,7 @@ import androidx.work.WorkManager
 import com.kareem.picbrain.data.media.MediaIndexer
 import com.kareem.picbrain.data.media.MediaStoreObserver
 import com.kareem.picbrain.data.ocr.OcrWorker
+import com.kareem.picbrain.data.search.EmbeddingGemmaEmbedder
 import com.kareem.picbrain.data.search.EmbeddingGemmaSemanticEngine
 import com.kareem.picbrain.data.search.EmbeddingWorker
 import com.kareem.picbrain.data.search.HybridSearchRepository
@@ -47,6 +48,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val ocrDoneCount = dao.observeOcrDoneCount().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val ocrPendingCount = dao.observeOcrPendingCount().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val ocrFailedCount = dao.observeOcrFailedCount().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+    val semanticIndexedCount = dao.observeSemanticIndexedCount(
+        EmbeddingGemmaEmbedder.MODEL_ID,
+        EmbeddingGemmaEmbedder.TARGET_DIMENSIONS
+    ).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val recentMedia = dao.observeRecent().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val recentScreenshots = dao.observeRecentScreenshots().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val semanticDiagnostics = searchRepository.semanticDiagnostics
@@ -100,21 +105,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun scheduleBackgroundOcr() {
         if (!OcrWorker.hasImageReadPermission(getApplication())) return
         val request = OneTimeWorkRequestBuilder<OcrWorker>().build()
-        workManager.enqueueUniqueWork(
-            OcrWorker.UNIQUE_WORK_NAME,
-            ExistingWorkPolicy.KEEP,
-            request
-        )
+        workManager.enqueueUniqueWork(OcrWorker.UNIQUE_WORK_NAME, ExistingWorkPolicy.KEEP, request)
     }
 
     fun scheduleSemanticIndexing() {
         if (!semanticModelStore.isInstalled()) return
+        status = "Semantic indexing scheduled…"
         val request = OneTimeWorkRequestBuilder<EmbeddingWorker>().build()
-        workManager.enqueueUniqueWork(
-            EmbeddingWorker.UNIQUE_WORK_NAME,
-            ExistingWorkPolicy.KEEP,
-            request
-        )
+        workManager.enqueueUniqueWork(EmbeddingWorker.UNIQUE_WORK_NAME, ExistingWorkPolicy.REPLACE, request)
     }
 
     fun downloadSemanticModel() {
