@@ -21,6 +21,25 @@ interface MediaItemDao {
     @Query("SELECT * FROM media_embeddings WHERE modelId=:modelId AND dimensions=:dimensions ORDER BY mediaId, chunkIndex")
     suspend fun getEmbeddings(modelId: String, dimensions: Int): List<EmbeddingEntity>
 
+    @Query("SELECT COUNT(DISTINCT mediaId) FROM media_embeddings WHERE modelId=:modelId AND dimensions=:dimensions")
+    fun observeSemanticIndexedCount(modelId: String, dimensions: Int): Flow<Int>
+
+    @Query("""
+        SELECT * FROM media_items m
+        WHERE m.isScreenshot = 1
+          AND m.ocrState = 'DONE'
+          AND TRIM(COALESCE(m.ocrNormalizedText, '')) != ''
+          AND NOT EXISTS (
+              SELECT 1 FROM media_embeddings e
+              WHERE e.mediaId = m.mediaId
+                AND e.modelId = :modelId
+                AND e.dimensions = :dimensions
+          )
+        ORDER BY COALESCE(m.dateTakenMillis, m.dateAddedSeconds * 1000) DESC
+        LIMIT :limit
+    """)
+    suspend fun getScreenshotsNeedingEmbedding(modelId: String, dimensions: Int, limit: Int): List<MediaItemEntity>
+
     @Query("DELETE FROM media_embeddings WHERE modelId=:modelId AND dimensions=:dimensions")
     suspend fun deleteEmbeddings(modelId: String, dimensions: Int)
 
