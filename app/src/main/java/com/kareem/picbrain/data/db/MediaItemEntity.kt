@@ -24,5 +24,9 @@ data class MediaItemEntity(
     val ocrState: String = "NOT_PROCESSED",
     val ocrEngine: String? = null,
     val ocrProcessedAtMillis: Long? = null,
-    val ocrError: String? = null
+    val ocrError: String? = null,
+    val semanticState: String = "PENDING",
+    val semanticAttemptCount: Int = 0,
+    val semanticLastError: String? = null,
+    val semanticLastAttemptAtMillis: Long? = null
 )
