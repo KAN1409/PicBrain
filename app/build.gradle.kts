@@ -13,8 +13,8 @@ android {
         applicationId = "com.kareem.picbrain"
         minSdk = 29
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.0.14"
+        versionCode = 15
+        versionName = "0.0.15"
     }
 
     compileOptions {
@@ -44,9 +44,7 @@ android {
         }
 
         buildTypes {
-            getByName("debug") {
-                signingConfig = signingConfigs.getByName("picbrain")
-            }
+            getByName("debug") { signingConfig = signingConfigs.getByName("picbrain") }
             getByName("release") {
                 signingConfig = signingConfigs.getByName("picbrain")
                 isMinifyEnabled = false
@@ -55,9 +53,7 @@ android {
     }
 }
 
-kotlin {
-    jvmToolchain(17)
-}
+kotlin { jvmToolchain(17) }
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
